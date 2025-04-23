@@ -1,12 +1,11 @@
-apiVersion: v1
 kind: PersistentVolumeClaim
+apiVersion: v1
 metadata:
-  name: lh-pvc-block
+  name: topolvm-fs-pvc
 spec:
   accessModes:
-    - ReadWriteOnce
-  volumeMode: Block
+  - ReadWriteOnce
   resources:
     requests:
       storage: 10Gi
-  storageClassName: 1rep
+  storageClassName: topolvm-provisioner

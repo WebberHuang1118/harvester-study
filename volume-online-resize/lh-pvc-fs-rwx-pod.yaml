@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lh-pvc-fs-rwx-pod
+spec:
+  containers:
+  - name: volume-test
+    image: ubuntu
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      privileged: true  
+    command: ["/bin/sleep"]
+    args: ["3600"]
+    volumeMounts:
+    - mountPath: /lh-pvc-fs-rwx
+      name: lh-pvc-fs-rwx
+  volumes:
+  - name: lh-pvc-fs-rwx
+    persistentVolumeClaim:
+      claimName: lh-pvc-fs-rwx
