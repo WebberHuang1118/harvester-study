@@ -7,18 +7,24 @@
 - [Filesystem Mode PVC (LH)](#filesystem-mode-pvc-lh)
   - [Steps](#steps-1)
   - [Note](#note)
+- [CSI Resizer vs Volume Expand](#csi-resizer-vs-volume-expand)
+  - [Overview](#overview)
+  - [Additional Information](#additional-information)
+  - [Resizer Behavior](#resizer-behavior)
+  - [PVC Expansion Behavior](#pvc-expansion-behavior)
+    - [Trivial Resizer](#trivial-resizer)
+    - [Typical Resizer](#typical-resizer)
+    - [Case Studies](#case-studies)
+      - [Case 1: No `EXPAND_VOLUME` in Both Capabilities](#case-1-no-expand_volume-in-both-capabilities)
+      - [Case 2: `EXPAND_VOLUME` in Node Capabilities Only](#case-2-expand_volume-in-node-capabilities-only)
+      - [Case 3: `EXPAND_VOLUME` in Both Capabilities](#case-3-expand_volume-in-both-capabilities)
+    - [Key Notes](#key-notes)
 - [Filesystem Mode PVC (Corner Case)](#filesystem-mode-pvc-corner-case)
   - [Example Pods](#example-pods)
   - [Solution](#solution)
     - [Mount the PVC to Another Pod](#mount-the-pvc-to-another-pod)
     - [Detach and Re-Attach the Volume](#detach-and-re-attach-the-volume)
-- [Understanding the Directory Structure](#understanding-the-directory-structure)
-  - [Summary](#summary)
-  - [Step-by-Step Process on the Node](#step-by-step-process-on-the-node)
-  - [Verifying the Behavior](#verifying-the-behavior)
-  - [Using `findmnt` to Verify Bind-Mounts](#using-findmnt-to-verify-bind-mounts)
-  - [Key Points](#key-points)
-  - [Behavior with Multiple Hotplug Volumes](#behavior-with-multiple-hotplug-volumes)
+  - [Understanding the Directory Structure](#understanding-the-directory-structure)
 
 ## Environment
 Harvester master commit `dc6013785a4d93f06a58cb0a230fa68fcb78d828` with PR [#7978](https://github.com/harvester/harvester/pull/7978)
@@ -144,7 +150,98 @@ drwxr-xr-x 1 root root        4096 Apr 18 08:36 ..
 drwxrws--- 2 root qemu       16384 Apr 18 08:15 lost+found
 ```
 
-### Filesystem Mode PVC (Corner Case)
+## CSI Resizer vs Volume Expand
+
+### Overview
+The PersistentVolumeClaimResize admission controller allows size changes when the PVC’s StorageClass has `allowVolumeExpansion: true`. This is the only built-in gate for volume expansion. Kubernetes does not check CSI driver capabilities when a PVC's size is updated. The request is admitted (or denied) before any CSI sidecars act.
+
+[Learn more about dynamically expanding volumes with CSI and Kubernetes](https://kubernetes.io/blog/2022/05/05/volume-expansion-ga/).
+
+### Additional Information
+Kubernetes does not consider the VolumeExpansion plugin capability in the IdentityServer when determining whether to allow volume expansion.
+
+### Resizer Behavior
+The behavior of the CSI resizer depends on the capabilities reported by the CSI driver during startup:
+
+1. **No EXPAND_VOLUME in ControllerGetCapabilities() and NodeGetCapabilities():**
+   - The CSI resizer stops working.
+   - PVC size remains inconsistent between spec and status.
+   - Source code reference:
+     ```go
+     // If the CSI driver does not report EXPAND_VOLUME in ControllerGetCapabilities() and NodeGetCapabilities(),
+     // the CSI resizer will stop working.
+     // Source: https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/resizer/csi_resizer.go#L75
+     log.Fatalf("CSI driver neither supports controller resize nor node resize")
+     ```
+
+2. **EXPAND_VOLUME in NodeGetCapabilities() only:**
+   - The trivial resizer is used.
+   - PVC expansion succeeds, depending on the CSI driver implementation.
+   - Source code reference:
+     ```go
+     // If the CSI driver reports EXPAND_VOLUME in NodeGetCapabilities() only,
+     // the trivial resizer is used to handle resize requests.
+     // Source: https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/resizer/csi_resizer.go#L73
+     log.Infof("The CSI driver supports node resize only, using trivial resizer to handle resize requests")
+     ```
+
+3. **EXPAND_VOLUME in ControllerGetCapabilities():**
+   - The typical resizer is used.
+   - PVC expansion succeeds, depending on the CSI driver implementation.
+   - Source code reference:
+     ```go
+     // If the CSI driver reports EXPAND_VOLUME in ControllerGetCapabilities(),
+     // the typical resizer is used to handle resize requests.
+     // Source: https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/resizer/csi_resizer.go#L83-L89
+     if supportsControllerResize {
+         log.Infof("The CSI driver supports controller resize, using typical resizer to handle resize requests")
+         return &csiResizer{
+             client: client,
+             ... // existing code
+         }
+     }
+     ```
+
+## PVC Expansion Behavior
+
+When a PersistentVolumeClaim (PVC) is requested to expand, the behavior depends on the type of resizer used by the CSI driver. Below are the key details:
+
+### Trivial Resizer
+- If the CSI driver only reports `EXPAND_VOLUME` in `NodeGetCapabilities()` but not in `ControllerGetCapabilities()`, the trivial resizer is used.
+- The trivial resizer always returns `fsResizeRequired = true`, which ensures that `NodeExpandVolume()` is always triggered.
+  - [Code Reference](https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/resizer/trivial_resizer.go#L63-L65)
+  - [NodeExpandVolume Trigger](https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/controller/controller.go#L445-L448)
+
+### Typical Resizer
+- If the CSI driver reports `EXPAND_VOLUME` in `ControllerGetCapabilities()`, the typical resizer is used.
+- The typical resizer first triggers `ControllerExpandVolume()` and then decides whether to invoke `NodeExpandVolume()` based on the return value of `fsResizeRequired`.
+  - [ControllerExpandVolume Trigger](https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/resizer/csi_resizer.go#L187-L190)
+  - [CSI Client Code](https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/csi/client.go#L134-L151)
+  - [fsResizeRequired Decision](https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/controller/controller.go#L445-L450)
+
+### Case Studies
+#### Case 1: No `EXPAND_VOLUME` in Both Capabilities
+- The CSI driver does not report `EXPAND_VOLUME` in either `ControllerGetCapabilities()` or `NodeGetCapabilities()`.
+- The resizer stops working, and the PVC remains in an inconsistent state between `spec` and `status`.
+  - Example: [LVM Driver](https://github.com/WebberHuang1118/csi-driver-lvm/tree/v0.1.2-no-controller-expand-no-node-expand)
+
+#### Case 2: `EXPAND_VOLUME` in Node Capabilities Only
+- The CSI driver reports `EXPAND_VOLUME` in `NodeGetCapabilities()` but not in `ControllerGetCapabilities()`.
+- The trivial resizer is used, and PVC expansion succeeds depending on the CSI driver implementation.
+  - Example: [LVM Driver](https://github.com/WebberHuang1118/csi-driver-lvm/tree/v0.1.2-no-controller-expand)
+
+#### Case 3: `EXPAND_VOLUME` in Both Capabilities
+- The CSI driver reports `EXPAND_VOLUME` in both `ControllerGetCapabilities()` and `NodeGetCapabilities()`.
+- The typical resizer is used, and PVC expansion succeeds depending on the CSI driver implementation.
+  - Example: [HostPath CSI Driver](https://github.com/kubernetes-csi/csi-driver-host-path/tree/v1.16.1)
+
+### Key Notes
+- If the CSI driver reports `EXPAND_VOLUME` in `ControllerGetCapabilities()` and `fsResizeRequired = true`, but does not report `EXPAND_VOLUME` in `NodeGetCapabilities()`, the PVC will be stuck with the condition `FileSystemResizePending`.
+  - [Code Reference](https://github.com/kubernetes-csi/external-resizer/blob/47607c2138bc4fbb6567a18f02390613da9edceb/pkg/controller/controller.go#L494-L500)
+- For trivial resizers, `NodeExpandVolume()` is always triggered.
+- For typical resizers, `ControllerExpandVolume()` is triggered first, and `NodeExpandVolume()` is invoked based on the `fsResizeRequired` return value.
+
+## Filesystem Mode PVC (Corner Case)
 
 **TL;DR:** This corner case occurs when:
 1. A filesystem mode PVC is hotplugged to a running VM.
@@ -263,12 +360,12 @@ Alternatively, you can detach and re-attach the volume to the VM using the follo
    virtctl addvolume vm1 --volume-name lh-pvc-fs-rwx
    ```
 
-## Understanding the Directory Structure
+### Understanding the Directory Structure
 
-### Summary
+#### Summary
 The EmptyDir volumes used by the `virt-launcher` and `hp-volume` pods are **not shared**. Instead, KubeVirt uses a **host-level bind-mount** to link the image file (or block device) from the `hp-volume` pod’s CSI mount into the `virt-launcher` pod’s EmptyDir. This ensures the disk is visible inside `virt-launcher` without the two EmptyDirs being directly connected.
 
-### Step-by-Step Process on the Node
+#### Step-by-Step Process on the Node
 
 1. **hp-volume Pod Initialization**
    - The kubelet calls `NodePublishVolume`, mounting the PVC under the CSI pod-mount path:
@@ -296,7 +393,7 @@ The EmptyDir volumes used by the `virt-launcher` and `hp-volume` pods are **not 
 4. **hp-volume Pod’s EmptyDir is Independent**
    - The `/path` in the `hp-volume` pod is its own EmptyDir, unrelated to the `virt-launcher` EmptyDir. No bind-mounts are added under it, so `ls /path` only shows files specific to the `hp-volume` pod.
 
-### Verifying the Behavior
+#### Verifying the Behavior
 
 To confirm this setup on the node (or via `crictl exec` into `virt-handler`):
 
@@ -312,11 +409,11 @@ To confirm this setup on the node (or via `crictl exec` into `virt-handler`):
    - `SOURCE` should point to the CSI pod-mount path.
    - `TARGET` should point to the `virt-launcher` EmptyDir.
 
-### Using `findmnt` to Verify Bind-Mounts
+#### Using `findmnt` to Verify Bind-Mounts
 
 The `findmnt` command is a powerful tool to inspect and verify the bind-mounts created by KubeVirt for hot-plugged volumes. Below is an example of how to use `findmnt` effectively:
 
-#### Example Output
+##### Example Output
 ```bash
 findmnt -no SOURCE,TARGET /var/lib/kubelet/pods/<virt-UID>/volumes/kubernetes.io~empty-dir/hotplug-disks/topolvm-fs-pvc.img
 ```
@@ -326,32 +423,32 @@ SOURCE                                                      TARGET
 /dev/mapper/myvg1-2979d232…[/disk.img]                     /var/lib/…/hotplug-disks/topolvm-fs-pvc.img
 ```
 
-#### How to Interpret the Output
+##### How to Interpret the Output
 | Field | Description |
 |-------|-------------|
 | **`/dev/mapper/myvg1-2979d232…`** | The **block device** (an LVM logical volume in the TopoLVM volume group) holding the PVC’s filesystem. |
 | **`[/disk.img]`** | Indicates a **file-level bind mount**, where the root is the single file `disk.img` located at the PVC’s mount point. |
 | **TARGET path** | The location where the kernel has mounted the file, visible to the `virt-launcher` pod. |
 
-#### Key Insights
+##### Key Insights
 - The `disk.img` file on the logical volume is bind-mounted into the `virt-launcher` pod’s EmptyDir, enabling the guest to see the new block device.
 - The `hp-volume` pod’s EmptyDir is not involved in this process; the bind-mount is directly managed by `virt-handler` on the host.
 - The `[ /disk.img ]` notation confirms a single-file bind mount, showing the kernel’s mapping of the file to the target path.
 
-#### Verification Steps
+##### Verification Steps
 1. Run the `findmnt` command to inspect the bind-mount:
    ```bash
    findmnt -no SOURCE,TARGET /var/lib/kubelet/pods/<virt-UID>/volumes/kubernetes.io~empty-dir/hotplug-disks/topolvm-fs-pvc.img
    ```
 2. Confirm that the `SOURCE` points to the PVC’s logical volume and the `TARGET` points to the `virt-launcher` pod’s EmptyDir.
 
-### Key Points
+#### Key Points
 
 - **EmptyDir Volumes are Per-Pod**: Each pod has its own EmptyDir volume, which is not shared with other pods.
 - **Host-Level Bind-Mount**: KubeVirt manually bind-mounts the relevant file (or device) from the `hp-volume` pod’s CSI mount into the `virt-launcher` pod’s EmptyDir.
 - **Mount Propagation**: The `HostToContainer` propagation ensures the disk is visible inside `virt-launcher` immediately after the bind-mount.
 
-### Behavior with Multiple Hotplug Volumes
+#### Behavior with Multiple Hotplug Volumes
 
 If a second volume is hot-plugged into the VM, the old `hp-volume` pod will be replaced by the new one. The new `hp-volume` pod is only responsible for handling the `NodeStage()` and `NodePublish()` operations for the second volume. Consequently, the first hotplugged volume will undergo `NodeUnPublish()` and `NodeUnstage()` operations. However, the image file for the first volume remains bind-mounted in the `virt-launcher` pod.
 
