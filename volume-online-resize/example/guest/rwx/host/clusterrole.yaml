@@ -1,0 +1,69 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harvester-networkfs-manager
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - services
+  - endpoints
+  - persistentvolumes
+  verbs:
+  - get
+  - watch
+  - list
+- apiGroups:
+  - harvesterhci.io
+  resources:
+  - networkfilesystems
+  - networkfilesystems/status
+  verbs:
+  - '*'
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - '*'
+- apiGroups:
+  - longhorn.io
+  resources:
+  - sharemanagers
+  - sharemanagers/status
+  - volumes
+  verbs:
+  - get
+  - watch
+  - list
+- apiGroups:
+  - longhorn.io
+  resources:
+  - volumeattachments
+  - volumeattachments/status
+  verbs:
+  - '*'
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - get
+  - list
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - watch
+  # Deployments
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get

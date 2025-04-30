@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: block-volume-test
+  namespace: default
+spec:
+  containers:
+  - name: volume-test
+    image: ubuntu
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      privileged: true  
+    command: ["/bin/sleep"]
+    args: ["3600"]
+    volumeDevices:
+    - devicePath: /dev/vol1
+      name: vol1
+  volumes:
+    - name: vol1
+      persistentVolumeClaim:
+        claimName: vol1

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: n2
+  namespace: default
+spec:
+  containers:
+  - image: nginx:latest
+    imagePullPolicy: IfNotPresent
+    name: container-0
+    volumeMounts:
+    - mountPath: /data
+      name: vol-ruvyw
+  volumes:
+  - name: vol-ruvyw
+    persistentVolumeClaim:
+      claimName: v1

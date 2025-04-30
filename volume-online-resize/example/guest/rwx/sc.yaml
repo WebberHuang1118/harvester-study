@@ -1,0 +1,10 @@
+allowVolumeExpansion: true
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: harvester-rwx
+parameters:
+  hostStorageClass: longhorn-rwx
+provisioner: driver.harvesterhci.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
