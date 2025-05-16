@@ -1,0 +1,84 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  annotations:
+    harvesterhci.io/vmRunStrategy: RerunOnFailure
+    harvesterhci.io/volumeClaimTemplates: '[{"metadata":{"name":"os-vol"},"spec":{"accessModes":["ReadWriteMany"],"resources":{"requests":{"storage":"5Gi"}},"volumeMode":"Block","storageClassName":"longhorn-image-hnblz"}}]'
+  labels:
+    harvesterhci.io/creator: harvester
+    harvesterhci.io/os: linux
+  name: vm1
+  namespace: demo
+spec:
+  runStrategy: RerunOnFailure
+  template:
+    metadata:
+      annotations:
+        harvesterhci.io/sshNames: '["default/webber"]'
+      creationTimestamp: null
+      labels:
+        harvesterhci.io/vmName: vm1
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: network.harvesterhci.io/mgmt
+                operator: In
+                values:
+                - "true"
+      architecture: amd64
+      domain:
+        cpu:
+          cores: 2
+          sockets: 1
+          threads: 1
+        devices:
+          disks:
+          - bootOrder: 1
+            disk:
+              bus: virtio
+            name: disk-1
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          inputs:
+          - bus: usb
+            name: tablet
+            type: tablet
+          interfaces:
+          - bridge: {}
+            model: virtio
+            name: default
+        features:
+          acpi:
+            enabled: true
+        machine:
+          type: q35
+        memory:
+          guest: 2Gi
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: 125m
+            memory: 1365Mi
+      evictionStrategy: LiveMigrateIfPossible
+      hostname: vm1
+      networks:
+      - multus:
+          networkName: default/mgmt-vlan
+        name: default
+      terminationGracePeriodSeconds: 20
+      volumes:
+      - name: disk-1
+        persistentVolumeClaim:
+          claimName: os-vol
+      - cloudInitNoCloud:
+          networkDataSecretRef:
+            name: vm-umpxi
+          secretRef:
+            name: vm-umpxi
+        name: cloudinitdisk

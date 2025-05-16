@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: demo
+  name: blk-vol-pod
+spec:
+  containers:
+  - name: volume-test
+    image: ubuntu
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      privileged: true  
+    command: ["/bin/sleep"]
+    args: ["3600"]
+    volumeDevices:
+    - devicePath: /dev/os-vol
+      name: os-vol
+  volumes:
+    - name: os-vol
+      persistentVolumeClaim:
+        claimName: os-vol

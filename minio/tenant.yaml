@@ -1,0 +1,24 @@
+apiVersion: minio.min.io/v2
+kind: Tenant
+metadata:
+  name: minio
+  namespace: minio-tenant
+spec:
+  image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+  mountPath: /export
+  requestAutoCert: false
+  configuration:
+    name: minio-env-secret
+  pools:
+    - name: pool-0           # optional, but useful when you add pools later
+      servers: 2             # <-- still “distributed”, but MinIO recommends ≥4
+      volumesPerServer: 2
+      volumeClaimTemplate:
+        metadata:
+          name: data         # must be “data” or you must also patch the pod spec
+        spec:
+          accessModes: [ReadWriteOnce]
+          storageClassName: 2rep
+          resources:
+            requests:
+              storage: 100Gi

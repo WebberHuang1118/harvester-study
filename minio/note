@@ -1,0 +1,24 @@
+# add the official chart repo
+helm repo add minio-operator https://operator.min.io
+helm repo update
+
+# install the operator in its own namespace
+helm install operator minio-operator/operator \
+  --namespace minio-operator --create-namespace
+
+
+kubectl create namespace minio
+
+kubectl apply -f statefulset.yaml
+
+kubectl apply -f service.yaml
+
+Get into minio pod:
+  mc alias set local http://localhost:9000 minioadmin minioadmin
+  mc mb local/velero --region pcloud
+  mc ls local
+
+  delete the bucket
+    mc rm --recursive --force local/velero && mc rb local/velero
+
+

@@ -1,0 +1,17 @@
+Deploy in-cluster nfs-server
+    $ kubectl apply -f nfs-server.yaml
+
+Deploy nfs csi driver
+    $ curl -skSL https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/deploy/install-driver.sh | bash -s master -
+
+Verification
+    deploy sc
+        $ kubectl apply -f storageclass-nfs.yaml
+    deploy pvc
+        $ kubectl apply -f pvc-nfs-csi-dynamic.yaml
+    deploy pod
+        $ kubectl apply -f nginx-pod-nfs.yaml
+
+Reference:
+    https://github.com/kubernetes-csi/csi-driver-nfs/blob/master/deploy/example/nfs-provisioner/README.md
+    https://github.com/kubernetes-csi/csi-driver-nfs/blob/master/docs/install-csi-driver-master.md

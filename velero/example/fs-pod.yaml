@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: demo
+  name: lh-fs-pvc-pod
+spec:
+  containers:
+  - name: volume-test
+    image: ubuntu
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      privileged: true  
+    command: ["/bin/sleep"]
+    args: ["3600"]
+    volumeMounts:
+    - mountPath: /lh-fs-pvc
+      name: lh-fs-pvc
+  volumes:
+  - name: lh-fs-pvc
+    persistentVolumeClaim:
+      claimName: lh-fs-pvc
