@@ -1,0 +1,99 @@
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+aws --endpoint-url http://192.188.0.56:9000 s3 ls s3://velero
+
+
+export VERSION=v1.15.2  # Change to the latest if needed
+curl -LO https://github.com/vmware-tanzu/velero/releases/download/${VERSION}/velero-${VERSION}-linux-amd64.tar.gz
+
+
+export BUCKET=velero
+export REGION=pcloud
+export VELERO_NS=velero
+
+velero install --provider aws --plugins quay.io/kubevirt/kubevirt-velero-plugin:v0.8.0,velero/velero-plugin-for-aws:v1.12.0 --bucket "$BUCKET" --secret-file ./credentials-velero --backup-location-config region=$REGION,s3ForcePathStyle="true",s3Url=http://192.188.0.56:9000 --use-node-agent --privileged-node-agent --snapshot-location-config region=pcloud
+
+velero install \
+  --provider aws \
+  --plugins \
+      quay.io/kubevirt/kubevirt-velero-plugin:v0.8.0,velero/velero-plugin-for-aws:v1.12.0 \
+  --bucket "$BUCKET" \
+  --secret-file ./credentials-velero \
+  --backup-location-config 'region=pcloud,s3ForcePathStyle=true,s3Url=http://192.188.0.56:9000' \
+  --use-node-agent \
+  --privileged-node-agent \
+  --features=EnableCSI
+
+velero backup-location get
+
+kubectl get volumesnapshotclass -o custom-columns=NAME:.metadata.name,\
+DRIVER:.driver,VELERO:.metadata.labels.velero\\.io/csi-volumesnapshot-class,\
+DEFAULT:.metadata.annotations.snapshot\\.storage\\.kubernetes\\.io/is-default-class
+
+
+# Make sure only ONE class carries Velero’s label *or* the default annotation
+kubectl label volumesnapshotclass longhorn velero.io/csi-volumesnapshot-class- snapshot.storage.kubernetes.io/is-default-class- --overwrite
+
+# Make 'snap' the default Velero target
+kubectl label volumesnapshotclass longhorn-snapshot velero.io/csi-volumesnapshot-class=true --overwrite
+
+
+velero backup create demo --include-namespaces demo --wait
+
+velero backup create demo \
+  --include-namespaces demo \
+  --snapshot-move-data \
+  --wait
+
+velero backup create demo \
+  --include-namespaces demo \
+  --snapshot-volumes=false \
+  --default-volumes-to-fs-backup \
+  --wait
+
+CSI snapshot only:
+  velero backup create demo --include-namespaces demo --snapshot-move-data=false --wait
+
+
+kubectl delete namespaces demo --force
+
+# RESTORE (pulls Kopia archive, rebuilds PVCs, recreates VM)
+velero restore create demo-r --from-backup demo --wait
+
+velero restore create demo-r --from-backup demo --write-sparse-files --wait
+
+virtctl start demo-vm -n demo
+
+
+# Backup/restore high‑level status
+velero backup logs   demo-vm-backup
+velero restore logs  demo-restore
+
+# Data‑mover CRs
+kubectl -n velero get datauploads,datadownloads -o wide
+
+# Kopia repository health
+velero repo get
+velero repo maintenance run
+
+# Node‑agent logs
+kubectl -n velero logs ds/velero-node-agent -c node-agent -f
+
+
+velero uninstall --force
+
+
+export BUCKET=velero
+export REGION=us-east-1
+export VELERO_NS=velero
+
+velero install \
+  --provider aws \
+  --plugins \
+      quay.io/kubevirt/kubevirt-velero-plugin:v0.8.0,velero/velero-plugin-for-aws:v1.12.0 \
+  --bucket "$BUCKET" \
+  --secret-file ./credentials-velero \
+  --backup-location-config 'region=us-east-1,s3ForcePathStyle=true,s3Url=minio.minio.svc.cluster.local:9000,insecureSkipTLSVerify=true' \
+  --use-node-agent \
+  --privileged-node-agent \
+  --features=EnableCSI
