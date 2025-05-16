@@ -17,4 +17,4 @@ spec:
   volumes:
   - name: lh-pvc-fs-rwx
     persistentVolumeClaim:
-      claimName: topolvm-vol
+      claimName: lh-pvc-fs-rwx

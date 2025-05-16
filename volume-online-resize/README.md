@@ -248,7 +248,7 @@ When a PersistentVolumeClaim (PVC) is requested to expand, the behavior depends 
 2. The PVC is not the latest one to be hotplugged to the running VM.
 3. After the PVC is hotplugged, the VM does not experience a reboot.
 
-A corner case exists for filesystem mode PVCs (e.g., `lh-pvc-fs-rwx.yaml`). If the PVC is a hotplug volume for a VM and is not the most recently hotplugged volume, it will not be expanded. This issue occurs because the CSI `NodeExpand()` function is not invoked, as the PVC is not mounted to either the `virt-launcher` pod or the `hotplug` pod. For instance, consider a PVC named `lh-pvc-fs-rwx`.
+A corner case exists for filesystem mode PVCs (e.g., `lh-pvc-fs-rwx.yaml`). If the PVC is a hotplug volume for a VM and is not the most recently hotplugged volume, it will not be expanded. This issue occurs because the CSI `NodeExpand()` function is not invoked, as the PVC is not mounted to either the `virt-launcher` pod or the `hotplug` pod.
 
 **Note:** If the VM undergoes a reboot before the expansion, this corner case will not occur because all PVCs will be mounted in the `hp-volume` pod.
 
@@ -363,7 +363,7 @@ Alternatively, you can detach and re-attach the volume to the VM using the follo
 ### Understanding the Directory Structure
 
 #### Summary
-The EmptyDir volumes used by the `virt-launcher` and `hp-volume` pods are **not shared**. Instead, KubeVirt uses a **host-level bind-mount** to link the image file (or block device) from the `hp-volume` pod’s CSI mount into the `virt-launcher` pod’s EmptyDir. This ensures the disk is visible inside `virt-launcher` without the two EmptyDirs being directly connected.
+KubeVirt uses a **host-level bind-mount** to link the image file (or block device) from the `hp-volume` pod’s CSI mount into the `virt-launcher` pod’s EmptyDir. This ensures the disk is visible inside `virt-launcher` without the two EmptyDirs being directly connected.
 
 #### Step-by-Step Process on the Node
 
@@ -373,7 +373,7 @@ The EmptyDir volumes used by the `virt-launcher` and `hp-volume` pods are **not 
      /var/lib/kubelet/pods/<hp-volume-UID>/volumes/kubernetes.io~csi/<pvc-uid>/mount/
      └─ disk.img  # Created by virt-handler
      ```
-   - The `hp-volume` pod’s container does not use this file, so it is not visible under `/path`.
+   - The `hp-volume` pod’s container does not use this file, so it is not visible.
 
 2. **virt-handler Detects the Hotplug Volume**
    - The `mountFileSystemHotplugVolume()` function (in `pkg/virt-handler/hotplug-disk/mount.go`) locates the CSI pod-mount path, creates `disk.img` if missing, and executes:
@@ -390,9 +390,6 @@ The EmptyDir volumes used by the `virt-launcher` and `hp-volume` pods are **not 
 3. **Immediate Visibility in virt-launcher**
    - The `virt-launcher` EmptyDir is mounted with `mountPropagation: HostToContainer`. This ensures any host-side mounts under the directory are instantly visible inside the container.
 
-4. **hp-volume Pod’s EmptyDir is Independent**
-   - The `/path` in the `hp-volume` pod is its own EmptyDir, unrelated to the `virt-launcher` EmptyDir. No bind-mounts are added under it, so `ls /path` only shows files specific to the `hp-volume` pod.
-
 #### Verifying the Behavior
 
 To confirm this setup on the node (or via `crictl exec` into `virt-handler`):
@@ -408,10 +405,6 @@ To confirm this setup on the node (or via `crictl exec` into `virt-handler`):
    ```
    - `SOURCE` should point to the CSI pod-mount path.
    - `TARGET` should point to the `virt-launcher` EmptyDir.
-
-#### Using `findmnt` to Verify Bind-Mounts
-
-The `findmnt` command is a powerful tool to inspect and verify the bind-mounts created by KubeVirt for hot-plugged volumes. Below is an example of how to use `findmnt` effectively:
 
 ##### Example Output
 ```bash
@@ -432,19 +425,10 @@ SOURCE                                                      TARGET
 
 ##### Key Insights
 - The `disk.img` file on the logical volume is bind-mounted into the `virt-launcher` pod’s EmptyDir, enabling the guest to see the new block device.
-- The `hp-volume` pod’s EmptyDir is not involved in this process; the bind-mount is directly managed by `virt-handler` on the host.
 - The `[ /disk.img ]` notation confirms a single-file bind mount, showing the kernel’s mapping of the file to the target path.
-
-##### Verification Steps
-1. Run the `findmnt` command to inspect the bind-mount:
-   ```bash
-   findmnt -no SOURCE,TARGET /var/lib/kubelet/pods/<virt-UID>/volumes/kubernetes.io~empty-dir/hotplug-disks/topolvm-fs-pvc.img
-   ```
-2. Confirm that the `SOURCE` points to the PVC’s logical volume and the `TARGET` points to the `virt-launcher` pod’s EmptyDir.
 
 #### Key Points
 
-- **EmptyDir Volumes are Per-Pod**: Each pod has its own EmptyDir volume, which is not shared with other pods.
 - **Host-Level Bind-Mount**: KubeVirt manually bind-mounts the relevant file (or device) from the `hp-volume` pod’s CSI mount into the `virt-launcher` pod’s EmptyDir.
 - **Mount Propagation**: The `HostToContainer` propagation ensures the disk is visible inside `virt-launcher` immediately after the bind-mount.
 
