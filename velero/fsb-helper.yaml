@@ -1,0 +1,21 @@
+# helper.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-fsb-helper          # keep name constant!
+  namespace: demo
+  annotations:
+    backup.velero.io/backup-volumes: vm-disk
+spec:
+  restartPolicy: Never
+  containers:
+  - name: sleep
+    image: busybox
+    command: ["sh","-c","sleep 3600"]
+    volumeMounts:
+    - name: vm-disk
+      mountPath: /data
+  volumes:
+  - name: vm-disk
+    persistentVolumeClaim:
+      claimName: vm1-disk-0-kbedq
