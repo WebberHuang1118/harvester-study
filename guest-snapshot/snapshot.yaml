@@ -1,0 +1,9 @@
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: v1-snapshot
+spec:
+  volumeSnapshotClassName: harvester-snapshot
+  source:
+    persistentVolumeClaimName: v1

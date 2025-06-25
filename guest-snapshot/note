@@ -1,0 +1,7 @@
+helm template harvester-csi-driver ./charts/harvester-csi-driver --namespace kube-system > harvester-csi-manifests.yaml
+
+helm get values harvester-csi-driver -n kube-system --output yaml > values-current.yaml
+
+helm template harvester-csi-driver ./charts/harvester-csi-driver --namespace kube-system -f values-current.yaml > harvester-csi-manifests.yaml
+
+kubectl apply -f harvester-csi-manifests.yaml
