@@ -1,0 +1,121 @@
+# Knowledge Sharing: Backing Image Integration and VM Backup/Restore
+
+This document provides an overview and best practices for integrating backing images and performing VM backup and restore operations using Longhorn (LH) and Harvester. It also highlights known issues and their solutions.
+
+## 1. Backing Image Integration
+
+### Overview
+- The VM image controller is responsible for creating related resources:
+    - **BackingImage**
+        - Name format: `vmi-<VM image UUID>`
+        - The VM image propagates its source type to the backing image.
+    - **StorageClass**
+        - Name format: `longhorn-<VM image name>`
+
+### Backing Image Reconciler Logic
+- If the backing image has no ready replica:
+    - Mark the VM image as `in progress`.
+- If the backing image has at least one ready replica:
+    - Mark the VM image as `imported`.
+
+### Control Flow
+- See the diagram: `./vmi.jpg`
+
+### Known Issues
+- **Longhorn Manager Crashes Due to Backing Image Eviction**
+    - **Root Cause:** Race condition between disk deletion in the backing image spec and status update, causing Longhorn Manager to crash.
+    - **Affected Versions:** v1.4.x (LH v1.7.0 - v1.7.3 and v1.8.0)
+    - [Longhorn Issue #10464](https://github.com/longhorn/longhorn/issues/10464)
+- **Backing Images Corruption During Upgrade to v1.4.0**
+    - **Root Cause:** Upgrading from Harvester v1.3.2 to v1.4.0 (Longhorn v1.6.2 to v1.7.2) may delete backing image data.
+    - [Harvester Issue #7958](https://github.com/harvester/harvester/issues/7958)
+    - [Longhorn Issue #10644](https://github.com/longhorn/longhorn/issues/10644)
+    - **Workaround:** [Preventing Corruption of VM Images During Upgrade](https://docs.harvesterhci.io/v1.4/upgrade/v1-3-2-to-v1-4-0#preventing-corruption-of-vm-images-during-upgrade)
+
+## 2. VM Backup via Longhorn
+
+### Creating a VM Backup
+- Create a CSI snapshot for each VM volume with backup type.
+- Upload VM metadata to remote storage, including:
+    - VM secrets
+    - VM image
+
+### Discovering and Restoring a VM Backup from Remote
+- Restore VM backup, including VM secrets and VM image.
+- Compose a CSI snapshot from the Longhorn backup:
+    - `VolumeSnapshotContent.snapshotHandle = "bak://<volume name>/<backup name>"`
+- Apply the snapshot to all VM volumes.
+
+### Control Flow
+- See the diagram: `./vmbackup.jpg`
+
+### Known Issues
+- **All Backups Removed if NFS Service Disconnects and Reconnects**
+    - **Root Cause:** If the NFS server experiences downtime, backup data may be deleted when the server comes back online and initially returns an empty response.
+    - [Longhorn Issue #9530](https://github.com/longhorn/longhorn/issues/9530)
+    - [Longhorn Enhancement Proposal](https://github.com/longhorn/longhorn/pull/9570)
+    - **Fixed Versions:** LH v1.6.4, v1.7.2, and v1.8.0
+
+## 3. VM Restore via Longhorn
+
+### Restoring to the Same Namespace as Source VMBackup
+A VM backup can be restored within the same namespace where the backup was originally created. This process is typically more straightforward, as all required resources (such as secrets and images) are accessible within the same namespace.
+
+**Prerequisites:**
+- The VMBackup resource and its associated CSI snapshots must exist and be accessible.
+- The target namespace must have the necessary permissions to create volumes and restore secrets.
+
+**Steps:**
+1. **Create new Persistent Volumes (PVs) from existing CSI snapshots:**
+    - For each VM volume, a new PV is provisioned using the corresponding CSI snapshot as the data source.
+    - This ensures the restored volumes are exact copies of the original at the time of backup.
+2. **Restore VM secrets:**
+    - Any secrets (such as SSH keys or cloud-init data) associated with the VM are restored from the backup metadata.
+    - These secrets are recreated in the target namespace to ensure the VM can function as before.
+3. **Recreate and start the VM:**
+    - The VM resource is recreated using the restored volumes and secrets.
+    - The VM is then started, completing the restore process.
+
+**Considerations:**
+- Ensure there are no naming conflicts with existing resources in the namespace.
+- Resource quotas and limits in the namespace may affect the restore process.
+
+### Restoring to a Different Namespace or Cluster
+Restoring a VM backup to a different namespace or even a different cluster is more complex, as it may involve synthesizing new CSI snapshots and ensuring all dependencies are available in the target environment.
+
+**Prerequisites:**
+- The backup data (including volume backups and metadata) must be accessible from the target namespace or cluster.
+- The target environment must support the same storage backend (e.g., Longhorn) and have compatible versions.
+- Any required secrets or images must be imported or recreated in the target namespace or cluster.
+
+**Steps:**
+1. **Compose new CSI snapshots for all VM volumes:**
+    - For each volume, a new CSI snapshot is synthesized from the Longhorn backup using the format:
+      `VolumeSnapshotContent.snapshotHandle = "bak://<volume name>/<backup name>"`
+    - This allows the target environment to recognize and use the backup data as a snapshot source.
+2. **Create new Persistent Volumes from the synthesized CSI snapshots:**
+    - New PVs are provisioned in the target namespace or cluster using the synthesized snapshots as data sources.
+3. **Restore or recreate VM secrets and metadata:**
+    - Any required secrets are restored or manually recreated in the target namespace or cluster.
+    - VM metadata (such as configuration and image references) is applied to ensure the VM is restored accurately.
+4. **Recreate and start the VM:**
+    - The VM resource is created using the restored volumes and secrets, then started.
+
+**Considerations:**
+- Ensure network policies, storage classes, and other dependencies are compatible in the target environment.
+- Manual intervention may be required to resolve differences in resource names, permissions, or configurations.
+- Cross-cluster restores may require additional tools or scripts to transfer backup data and metadata.
+
+### Control Flow
+- See the diagram: `./vmrestore.jpg`
+
+### Known Issues
+- **Restoring VM Backup to Another Namespace or Cluster is Broken**
+    - **Root Cause:** Harvester used the wrong format in `VolumeSnapshotContent.snapshotHandle`.
+    - [Harvester Issue #7539](https://github.com/harvester/harvester/issues/7539)
+    - **Status:** Fixed before v1.5.0 release
+
+---
+
+For further details, refer to the official documentation and issue trackers linked above. Always verify compatibility and known issues before performing upgrades or backup/restore operations.
+
