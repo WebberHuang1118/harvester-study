@@ -1,0 +1,21 @@
+PRs:
+    overall task:
+        https://github.com/harvester/harvester/issues/8616
+
+    chart:
+        main:
+            https://github.com/harvester/charts/pull/385
+        release:
+            https://github.com/harvester/charts/pull/386
+
+    racher charts:
+        2.9 https://github.com/rancher/charts/pull/5871
+        2.10 https://github.com/rancher/charts/pull/5872
+        2.11 https://github.com/rancher/charts/pull/5873
+        2.12 https://github.com/rancher/charts/pull/5874
+
+    rke2 charts:
+        https://github.com/rancher/rke2-charts/pull/731
+
+Release Howto:
+    https://github.com/harvester/harvester-csi-driver/blob/master/docs/ReleaseHowTo.md
