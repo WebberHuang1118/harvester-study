@@ -2,8 +2,9 @@
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
 metadata:
-  name: v1-snapshot
+  name: snapshot-fs-vol
+  namespace: default
 spec:
   volumeSnapshotClassName: harvester-snapshot
   source:
-    persistentVolumeClaimName: v1
+    persistentVolumeClaimName: fs-vol

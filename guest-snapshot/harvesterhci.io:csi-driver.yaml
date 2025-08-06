@@ -1,0 +1,96 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+    meta.helm.sh/release-name: harvester
+    meta.helm.sh/release-namespace: harvester-system
+    objectset.rio.cattle.io/id: default-mcc-harvester-cattle-fleet-local-system
+  creationTimestamp: "2025-08-05T04:02:12Z"
+  labels:
+    app.kubernetes.io/component: apiserver
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: harvester
+    app.kubernetes.io/part-of: harvester
+    app.kubernetes.io/version: v1.6.0-rc5
+    helm.sh/chart: harvester-1.6.0-rc5
+    helm.sh/release: harvester
+    objectset.rio.cattle.io/hash: e852fa897f5eae59a44b4bfe186aad80b10b94b3
+  managedFields:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .: {}
+          f:meta.helm.sh/release-name: {}
+          f:meta.helm.sh/release-namespace: {}
+          f:objectset.rio.cattle.io/id: {}
+        f:labels:
+          .: {}
+          f:app.kubernetes.io/component: {}
+          f:app.kubernetes.io/managed-by: {}
+          f:app.kubernetes.io/name: {}
+          f:app.kubernetes.io/part-of: {}
+          f:app.kubernetes.io/version: {}
+          f:helm.sh/chart: {}
+          f:helm.sh/release: {}
+          f:objectset.rio.cattle.io/hash: {}
+    manager: fleetagent
+    operation: Update
+    time: "2025-08-05T04:02:12Z"
+  - apiVersion: rbac.authorization.k8s.io/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:rules: {}
+    manager: kubectl-edit
+    operation: Update
+    time: "2025-08-13T03:27:06Z"
+  name: harvesterhci.io:csi-driver
+  resourceVersion: "7852022"
+  uid: bebe1310-0421-4035-9717-9b87cdfb5f5c
+rules:
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - storageclasses
+  - volumeattachments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - harvesterhci.io
+  resources:
+  - networkfilesystems
+  - networkfilesystems/status
+  verbs:
+  - '*'
+- apiGroups:
+  - harvesterhci.io
+  resourceNames:
+  - csi-online-expand-validation
+  - csi-driver-config
+  resources:
+  - settings
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - longhorn.io
+  resources:
+  - volumes
+  - volumes/status
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - snapshot.storage.k8s.io
+  resources:
+  - volumesnapshots
+  - volumesnapshotcontents
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete

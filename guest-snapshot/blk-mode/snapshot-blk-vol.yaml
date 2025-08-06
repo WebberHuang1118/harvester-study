@@ -1,0 +1,10 @@
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: snapshot-blk-vol
+  namespace: default
+spec:
+  volumeSnapshotClassName: harvester-snapshot
+  source:
+    persistentVolumeClaimName: blk-vol
