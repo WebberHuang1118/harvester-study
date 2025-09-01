@@ -1,0 +1,132 @@
+flowchart TD
+    A[VM Restore Request] --> B{Check Restore Status}
+    B -->|Nil Status| C[Initialize Status]
+    B -->|Has Status| D{Check if Progressing}
+    
+    C --> E[Set Initial Conditions]
+    E --> F[Update Status to Processing]
+    
+    D -->|Not Progressing| Z[End - No Action]
+    D -->|Progressing| G[Get VM Backup]
+    
+    G --> H{Backup Ready?}
+    H -->|No| ERROR1[Update Error Status]
+    H -->|Yes| I{Missing Volumes?}
+    
+    I -->|Yes| J[Initialize Volume Status]
+    I -->|No| K[Reconcile Resources]
+    
+    J --> L[Create Volume Restore Array]
+    L --> M[Set Deleted Volumes List]
+    M --> N[Update Status with Volumes]
+    
+    K --> O[Reconcile Volume Restores]
+    O --> P[Reconcile VM]
+    P --> Q[Reconcile Secret Backups]
+    
+    O --> R{Volumes Ready?}
+    R -->|No| S[Create PVCs from Snapshots]
+    R -->|Yes| T[Check Volume Status]
+    
+    S --> S1{Same Namespace?}
+    S1 -->|Yes| S2[Get Data Source Same NS]
+    S1 -->|No| S3[Get Data Source Another NS]
+    
+    S2 --> S4{Volume Snapshot Exists?}
+    S4 -->|No| S5[Revise Volume Snapshot]
+    S4 -->|Yes| S6[Use Existing Snapshot]
+    
+    S3 --> S7[Create Volume Snapshot Content]
+    S7 --> S8[Create Volume Snapshot]
+    
+    S5 --> S9[Update VM Backup]
+    S9 --> S10[Trigger VMBackup Controller]
+    
+    S6 --> S11[Create PVC with DataSource]
+    S8 --> S11
+    
+    T --> T1{PVC Bound?}
+    T1 -->|No| T2{Check LH Volume}
+    T1 -->|Yes| U[Continue to VM Reconcile]
+    
+    T2 --> T3{Restore Failed?}
+    T3 -->|Yes| ERROR2[Return Restore Error]
+    T3 -->|No| T4[Wait for Volume Ready]
+    
+    P --> V{VM Exists?}
+    V -->|No| W[Create New VM]
+    V -->|Yes| X[Update Existing VM]
+    
+    W --> W1[Sanitize VM Annotations]
+    W1 --> W2[Create VM with New Volumes]
+    W2 --> W3{Keep MAC Address?}
+    W3 -->|No| W4[Remove MAC Addresses]
+    W3 -->|Yes| W5[Keep Original MACs]
+    W4 --> Y[Set Owner Reference]
+    W5 --> Y
+    
+    X --> X1[Update VM Spec]
+    X1 --> X2[Set Halted Run Strategy]
+    X2 --> X3[Update Volume References]
+    X3 --> Y
+    
+    Q --> Q1{New VM?}
+    Q1 -->|Yes| Q2[Create New Secrets]
+    Q1 -->|No| Q3[Update Existing Secrets]
+    
+    Y --> AA[Update Owner Reference]
+    AA --> BB[Update Target UID]
+    
+    U --> CC[Update Restore Progress]
+    CC --> DD{Volumes Ready?}
+    DD -->|No| EE[Update Progress < 90%]
+    DD -->|Yes| FF[Start VM]
+    
+    EE --> GG[Set Progressing Condition]
+    GG --> HH[Update Status]
+    
+    FF --> II{VM Ready?}
+    II -->|No| JJ[Wait for VM Ready]
+    II -->|Yes| KK[Delete Old PVCs]
+    
+    JJ --> LL[Update Status - Waiting]
+    
+    KK --> MM{Retain Policy?}
+    MM -->|Yes| NN[Skip PVC Deletion]
+    MM -->|No| OO[Delete Old PVCs]
+    
+    NN --> PP[Complete Restore]
+    OO --> PP
+    
+    PP --> QQ[Set Progress to 100%]
+    QQ --> RR[Set Complete Status]
+    RR --> SS[Create Success Event]
+    SS --> TT[Update Final Status]
+    
+    ERROR1 --> UU[Create Error Event]
+    ERROR2 --> UU
+    UU --> VV[Set Error Conditions]
+    VV --> WW[Update Error Status]
+    
+    %% Event Handlers
+    XX[PVC Change Event] --> YY[Check Restore Annotation]
+    YY --> ZZ[Update LH Volume Annotations]
+    ZZ --> AAA[Enqueue Restore]
+    
+    BBB[LH Engine Change Event] --> CCC[Check Restore Status]
+    CCC --> DDD[Update Volume Restore Info]
+    DDD --> AAA
+    
+    EEE[VM Change Event] --> FFF[Check Restore Annotation]
+    FFF --> AAA
+    
+    %% Cleanup
+    GGG[Restore Delete Event] --> HHH[Get VM Backup]
+    HHH --> III[Delete Volume Snapshot Contents]
+    III --> JJJ[Clean up Resources]
+    
+    style A fill:#e1f5fe
+    style PP fill:#c8e6c9
+    style ERROR1 fill:#ffcdd2
+    style ERROR2 fill:#ffcdd2
+    style UU fill:#ffcdd2

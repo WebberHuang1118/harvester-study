@@ -1,0 +1,145 @@
+flowchart TD
+    %% Entry Point
+    A[RegisterBackup] --> B[Setup Event Handlers]
+    B --> C1[vmBackups.OnChange → OnBackupChange]
+    B --> C2[vmBackups.OnRemove → OnBackupRemove]
+    B --> C3[snapshots.OnChange → updateVolumeSnapshotChanged]
+    B --> C4[lhbackups.OnChange → OnLHBackupChanged]
+
+    %% Main OnBackupChange Flow
+    C1 --> D{vmBackup nil or<br/>DeletionTimestamp?}
+    D -->|Yes| END1[Return nil]
+    D -->|No| E{IsBackupReady?}
+    
+    E -->|Yes| F[handleBackupReady]
+    E -->|No| G{isBackupMissingStatus?}
+    
+    %% handleBackupReady Flow
+    F --> F1[configureCSIDriverVolumeSnapshotClassNames]
+    F1 --> F2{Backup Type == Snapshot?}
+    F2 -->|Yes| END2[Return - No metadata upload]
+    F2 -->|No| F3[configureBackupTargetOnStatus]
+    F3 --> F4[uploadVMBackupMetadata]
+    F4 --> END3[Complete]
+
+    %% Initialize Backup Flow
+    G -->|Yes| H[Initialize New Backup]
+    G -->|No| I[Main Reconcile Flow]
+    
+    H --> H1[getBackupSource]
+    H1 --> H2[initBackup]
+    H2 --> H3[getVolumeBackups]
+    H2 --> H4[getSecretBackups]
+    H2 --> H5[getCSIDriverMap]
+    H2 --> H6[Set BackupTarget if needed]
+    H3 --> H7[Update VMBackup Status]
+    H4 --> H7
+    H5 --> H7
+    H6 --> H7
+    H7 --> END4[Complete]
+
+    %% Main Reconcile Flow
+    I --> I1[getCSIDriverMap]
+    I1 --> I2[reconcileVolumeSnapshots]
+    I2 --> I3[updateConditions]
+    I3 --> END5[Complete]
+
+    %% reconcileVolumeSnapshots Details
+    I2 --> J1[For each VolumeBackup]
+    J1 --> J2[getVolumeSnapshot]
+    J2 --> J3{VolumeSnapshot exists?}
+    
+    J3 -->|No| J4[freezeFsIfNeeded]
+    J4 --> J5[createVolumeSnapshot]
+    J5 --> J6{LonghornBackupName exists?}
+    J6 -->|Yes| J7[createVolumeSnapshotContent<br/>from LH Backup]
+    J6 -->|No| J8[Create from PVC]
+    
+    J3 -->|Yes| J9{VolumeSnapshot being deleted?}
+    J9 -->|Yes| J10[Requeue after 5 seconds]
+    J9 -->|No| J11[shouldSkipVolumeSnapshotUpdate]
+    J11 --> J12{Should skip?}
+    J12 -->|No| J13[Update VolumeBackup status<br/>from VolumeSnapshot]
+    J12 -->|Yes| J14[Skip update]
+    
+    J7 --> J15[Update VMBackup if changed]
+    J8 --> J15
+    J13 --> J15
+    J14 --> J15
+    J10 --> END6[Return]
+    J15 --> END7[Continue to next volume]
+
+    %% updateConditions Flow
+    I3 --> K1[Check if backup progressing]
+    K1 --> K2[Calculate progress and ready state]
+    K2 --> K3[For each VolumeBackup]
+    K3 --> K4[updateBackupProgress if Backup type]
+    K4 --> K5[Check for errors]
+    K5 --> K6{All volumes ready and no errors?}
+    K6 -->|Yes| K7[Set ReadyToUse=true<br/>Update success conditions]
+    K6 -->|No| K8[Set error conditions<br/>or keep progressing]
+    K7 --> K9[Update VMBackup status]
+    K8 --> K9
+    K9 --> END8[Complete]
+
+    %% OnBackupRemove Flow
+    C2 --> L1{vmBackup has BackupTarget?}
+    L1 -->|No| END9[Return nil]
+    L1 -->|Yes| L2[Get current backup target]
+    L2 --> L3{Target not default?}
+    L3 -->|Yes| L4[deleteVMBackupMetadata]
+    L3 -->|No| L5[Skip metadata deletion]
+    L4 --> L6{Backup target different<br/>from current?}
+    L5 --> L6
+    L6 -->|Yes| L7[forceDeleteVolumeSnapshotAndContent]
+    L6 -->|No| END10[Complete]
+    L7 --> END11[Complete]
+
+    %% VolumeSnapshot Change Handler
+    C3 --> M1{VolumeSnapshot valid?}
+    M1 -->|No| END12[Return nil]
+    M1 -->|Yes| M2[resolveVolSnapshotRef]
+    M2 --> M3{Found VMBackup owner?}
+    M3 -->|Yes| M4[Enqueue VMBackup for reconcile]
+    M3 -->|No| END13[Return nil]
+    M4 --> END14[Complete]
+
+    %% Longhorn Backup Change Handler
+    C4 --> N1{LH Backup valid and has SnapshotName?}
+    N1 -->|No| END15[Return nil]
+    N1 -->|Yes| N2[Get VolumeSnapshotContent]
+    N2 --> N3[Get VolumeSnapshot]
+    N3 --> N4[resolveVolSnapshotRef]
+    N4 --> N5{Found VMBackup owner?}
+    N5 -->|No| END16[Return nil]
+    N5 -->|Yes| N6[Update LonghornBackupName in VolumeBackup]
+    N6 --> N7{Status changed?}
+    N7 -->|Yes| N8[Update VMBackup]
+    N7 -->|No| N9[Enqueue for progress update]
+    N8 --> END17[Complete]
+    N9 --> END18[Complete]
+
+    %% Styling
+    style D fill:#fff3e0
+    style E fill:#fff3e0
+    style G fill:#fff3e0
+    style J3 fill:#fff3e0
+    style J6 fill:#fff3e0
+    style J9 fill:#fff3e0
+    style J12 fill:#fff3e0
+    style K6 fill:#fff3e0
+    style L1 fill:#fff3e0
+    style L3 fill:#fff3e0
+    style L6 fill:#fff3e0
+
+    style H2 fill:#e8f5e8
+    style I2 fill:#e8f5e8
+    style I3 fill:#e8f5e8
+    style F4 fill:#e8f5e8
+    style J5 fill:#e8f5e8
+    style K9 fill:#e8f5e8
+
+    style A fill:#e1f5fe
+    style F fill:#e1f5fe
+    style H fill:#e1f5fe
+    style I fill:#e1f5fe
