@@ -67,7 +67,8 @@ export PACKAGE=harvester/harvester-csi-driver
 make prepare
 make patch
 make clean
-make charts
+PACKAGE=harvester/harvester-csi-driver make charts
+make validate
 ```
 
 ## Phase 3: Local Helm Testing

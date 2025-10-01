@@ -2,6 +2,17 @@
 
 This guide provides steps to install and uninstall Velero with S3-compatible storage and CSI support.
 
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Uninstall](#uninstall)
+- [Notes](#notes)
+- [CSI Manifest-Only Backup and Restore (Longhorn Example)](#csi-manifest-only-backup-and-restore-longhorn-example)
+- [Velero Filesystem Backup (FSB) for Backup/Restore](#velero-filesystem-backup-fsb-for-backuprestore)
+- [CSI Snapshot + Data Mover Backup/Restore](#csi-snapshot--data-mover-backuprestore)
+- [Filesystem Freeze Hooks for VM Backup Consistency](#filesystem-freeze-hooks-for-vm-backup-consistency)
+
 ## Prerequisites
 - Velero CLI installed
 - Access to a Kubernetes cluster
@@ -197,3 +208,148 @@ This section describes how to use Velero's CSI snapshot capability with the Data
 - Only one VolumeSnapshotClass should be labeled for Velero at a time.
 - The Data Mover feature is required for off-cluster backup/restore with CSI snapshots.
 - For more details and output samples, see `velero/example`.
+
+## Filesystem Freeze Hooks for VM Backup Consistency
+
+Velero supports pre and post backup hooks to ensure filesystem consistency during VM backups. This is especially important for database workloads or applications that require transactional consistency.
+
+**Important**: The hooks need to execute commands inside the guest VM, not the KubeVirt container, to achieve proper guest filesystem freeze.
+
+### Method 1: KubeVirt virt-freezer (Recommended for KubeVirt VMs)
+
+The `virt-freezer` utility is specifically designed for KubeVirt VMs and is available in the compute container. This is the most reliable method for KubeVirt environments.
+
+**Important**: Velero hooks must be applied to pod annotations, not VM manifest annotations. For KubeVirt VMs, you need to annotate the virt-launcher pod.
+
+#### Option 1: Annotate the virt-launcher pod directly (Recommended)
+
+```bash
+# Annotate the virt-launcher pod with virt-freezer hooks
+kubectl annotate pod -n demo -l kubevirt.io/vm=vm-nfs \
+    pre.hook.backup.velero.io/command='["/usr/bin/virt-freezer", "--freeze", "--namespace", "demo", "--name", "vm-nfs"]' \
+    pre.hook.backup.velero.io/container=compute \
+    pre.hook.backup.velero.io/on-error=Fail \
+    pre.hook.backup.velero.io/timeout=30s \
+    post.hook.backup.velero.io/command='["/usr/bin/virt-freezer", "--unfreeze", "--namespace", "demo", "--name", "vm-nfs"]' \
+    post.hook.backup.velero.io/container=compute \
+    post.hook.backup.velero.io/timeout=30s
+```
+
+#### Option 2: Add annotations to VM template (propagates to virt-launcher pod)
+
+If you want the annotations to be part of the VM definition and automatically applied to the virt-launcher pod:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-nfs
+  namespace: demo
+spec:
+  template:
+    metadata:
+      annotations:
+        # These annotations will be applied to the virt-launcher pod
+        pre.hook.backup.velero.io/command: '["/usr/bin/virt-freezer", "--freeze", "--namespace", "demo", "--name", "vm-nfs"]'
+        pre.hook.backup.velero.io/container: compute
+        pre.hook.backup.velero.io/on-error: Fail
+        pre.hook.backup.velero.io/timeout: 30s
+        
+        post.hook.backup.velero.io/command: '["/usr/bin/virt-freezer", "--unfreeze", "--namespace", "demo", "--name", "vm-nfs"]'
+        post.hook.backup.velero.io/container: compute
+        post.hook.backup.velero.io/timeout: 30s
+    spec:
+      # ...rest of VM spec...
+```
+
+#### Option 3: Use Backup-level hooks (Alternative approach)
+
+**Note**: This approach is only suitable for namespaces containing a single VM, as the freeze/unfreeze target (`vm-nfs`) is hardcoded in the backup configuration. For namespaces with multiple VMs, use Option 1 or Option 2 instead.
+
+```yaml
+# backup-with-virt-freezer.yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: demo-with-freeze
+  namespace: velero
+spec:
+  includedNamespaces:
+  - demo
+  snapshotMoveData: true
+  hooks:
+    resources:
+    - name: vm-freeze-hook
+      includedNamespaces:
+      - demo
+      includedResources:
+      - pods
+      labelSelector:
+        matchLabels:
+          kubevirt.io: virt-launcher
+          kubevirt.io/vm: vm-nfs  # Target specific VM
+      pre:
+      - exec:
+          container: compute
+          command:
+          - /usr/bin/virt-freezer
+          - --freeze
+          - --namespace
+          - demo
+          - --name
+          - vm-nfs
+          onError: Fail
+          timeout: 30s
+      post:
+      - exec:
+          container: compute
+          command:
+          - /usr/bin/virt-freezer
+          - --unfreeze
+          - --namespace
+          - demo
+          - --name
+          - vm-nfs
+          timeout: 30s
+```
+
+### Recommended Approach
+
+**Option 1** (direct pod annotation) is the most straightforward and follows Velero best practices:
+
+1. **Deploy your VM first** without hook annotations
+2. **Annotate the virt-launcher pod** with the freeze hooks
+3. **Run your backup** with the existing command
+
+```bash
+# 1. Deploy VM
+kubectl apply -f your-vm.yaml
+
+# 2. Wait for VM to be running and virt-launcher pod to be created
+kubectl wait --for=condition=Ready pod -l kubevirt.io/vm=vm-nfs -n demo --timeout=300s
+
+# 3. Annotate the virt-launcher pod
+kubectl annotate pod -n demo -l kubevirt.io/vm=vm-nfs \
+    pre.hook.backup.velero.io/command='["/usr/bin/virt-freezer", "--freeze", "--namespace", "demo", "--name", "vm-nfs"]' \
+    pre.hook.backup.velero.io/container=compute \
+    pre.hook.backup.velero.io/on-error=Fail \
+    pre.hook.backup.velero.io/timeout=30s \
+    post.hook.backup.velero.io/command='["/usr/bin/virt-freezer", "--unfreeze", "--namespace", "demo", "--name", "vm-nfs"]' \
+    post.hook.backup.velero.io/container=compute \
+    post.hook.backup.velero.io/timeout=30s
+
+# 4. Run backup as usual
+velero backup create demo \
+    --include-namespaces demo \
+    --snapshot-move-data \
+    --wait
+```
+
+### Key Differences from Previous Approach
+
+- **Pod annotations**: Hooks are applied to the actual virt-launcher pod, not the VM manifest
+- **Label selector**: Uses `-l kubevirt.io/vm=vm-nfs` to target the specific VM's pod
+- **Runtime application**: Annotations can be applied after the VM is running
+- **Velero compliance**: Follows the official Velero documentation approach
+
+This approach ensures that Velero will correctly execute the filesystem freeze hooks when backing up the virt-launcher pod.
