@@ -1,0 +1,21 @@
+How LH handles VA tickets for Attaching/Migration Volumes
+
+Scenario 1:
+backup creation -> csi attachment (request to attach to different nodes)
+
+1. backup ticket will be interupt and make the volume is going to be detached
+- https://github.com/longhorn/longhorn-manager/blob/0c5eb1d2b77b9a50d39d25b7d7387e2637ed8a4b/controller/volume_attachment_controller.go#L551-L553
+- https://github.com/longhorn/longhorn-manager/blob/0c5eb1d2b77b9a50d39d25b7d7387e2637ed8a4b/controller/volume_attachment_controller.go#L559-L561
+
+2. csi ticket will wait until the volume is fully detached https://github.com/longhorn/longhorn-manager/blob/0c5eb1d2b77b9a50d39d25b7d7387e2637ed8a4b/controller/volume_attachment_controller.go#L650-L653 and make the volume being attach to the node as csi requested https://github.com/longhorn/longhorn-manager/blob/0c5eb1d2b77b9a50d39d25b7d7387e2637ed8a4b/controller/volume_attachment_controller.go#L668-L669
+
+
+Scenario 2:
+csi attachment -> backup creation
+1. as csi attach success, volume's Status.OwnerID will be set as the attached node https://github.com/longhorn/longhorn-manager/blob/0c5eb1d2b77b9a50d39d25b7d7387e2637ed8a4b/controller/volume_controller.go#L4665
+2. backup controller will create a ticket to ask volume to be attached on the node as Status.OwnerID
+3. csi attachement and backup operation use the engine on the same node to process
+
+Scenario 3:
+csi attachment1 -> csi attachment2
+volume live migration will be triggered https://github.com/longhorn/longhorn-manager/blob/0c5eb1d2b77b9a50d39d25b7d7387e2637ed8a4b/controller/volume_attachment_controller.go#L379-L400

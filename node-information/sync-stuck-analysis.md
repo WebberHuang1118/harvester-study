@@ -380,9 +380,3 @@ dmesg | grep -E 'I/O|blk|sd[a-z]|nvme|reset|abort'
 ```
 dmesg | grep nfs
 ```
-
----
-
-# 🟩 Closing Note
-
-This was a textbook case of a **kernel-level block-device deadlock**, and all debugging steps you performed were correct.
