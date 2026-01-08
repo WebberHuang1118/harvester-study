@@ -1,0 +1,15 @@
+helm get values harvester-csi-driver -n kube-system --output yaml > values-current.yaml
+
+helm template harvester-csi-driver ./charts/harvester-csi-driver --namespace kube-system -f values-current.yaml > harvester-csi-manifests.yaml
+
+kubectl apply -f harvester-csi-manifests.yaml
+
+
+helm -n kube-system get values harvester-csi-driver -o yaml > values.current.yaml
+
+helm repo update
+
+helm upgrade --install harvester-csi-driver harvester/harvester-csi-driver \
+  -n kube-system \
+  --version 0.1.23 \
+  -f values.current.yaml

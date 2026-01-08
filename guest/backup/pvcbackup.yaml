@@ -1,0 +1,8 @@
+apiVersion: harvesterhci.io/v1beta1
+kind: PVCBackup
+metadata:
+  namespace: backup
+  name: pvcb-vol1
+spec:
+  type: lh
+  source: vol1
