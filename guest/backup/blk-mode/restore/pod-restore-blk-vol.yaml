@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-restore-blk-vol
+  namespace: default
+spec:
+  containers:
+  - name: volume-test
+    image: ubuntu
+    imagePullPolicy: IfNotPresent
+    securityContext:
+      privileged: true  
+    command: ["/bin/sleep"]
+    args: ["3600"]
+    volumeDevices:
+    - devicePath: /dev/restore-blk-vol
+      name: restore-blk-vol
+  volumes:
+    - name: restore-blk-vol
+      persistentVolumeClaim:
+        claimName: restore-blk-vol

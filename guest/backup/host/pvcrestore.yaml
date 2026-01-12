@@ -1,0 +1,8 @@
+apiVersion: harvesterhci.io/v1beta1
+kind: PVCRestore
+metadata:
+  namespace: default
+  name: pvcr-vol1
+spec:
+  type: lh
+  from: backup/pvcb-vol1

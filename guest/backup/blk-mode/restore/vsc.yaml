@@ -1,0 +1,13 @@
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotContent
+metadata:
+  name: backup-blk-vol-vsc
+spec:
+  deletionPolicy: Delete
+  driver: driver.harvesterhci.io
+  source:
+    snapshotHandle: backup:backup/snapshot-0701f761-4c34-4b66-b235-8d38f1f01c61
+  volumeSnapshotClassName: harveter-backup
+  volumeSnapshotRef:
+    name: backup-blk-vol
+    namespace: default

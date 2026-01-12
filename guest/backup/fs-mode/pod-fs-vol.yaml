@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-fs-vol
+spec:
+  containers:
+    - name: ubuntu
+      image: ubuntu:latest
+      command: ["/bin/bash", "-c", "sleep infinity"]
+      volumeMounts:
+        - name: fs-vol
+          mountPath: /data-fs-vol
+  volumes:
+    - name: fs-vol
+      persistentVolumeClaim:
+        claimName: fs-vol
