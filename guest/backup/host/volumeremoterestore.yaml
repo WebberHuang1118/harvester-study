@@ -1,5 +1,5 @@
 apiVersion: harvesterhci.io/v1beta1
-kind: PVCRestore
+kind: VolumeRemoteRestore
 metadata:
   namespace: default
   name: pvcr-vol1

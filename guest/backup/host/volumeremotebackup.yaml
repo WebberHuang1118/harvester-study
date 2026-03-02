@@ -1,5 +1,5 @@
 apiVersion: harvesterhci.io/v1beta1
-kind: PVCBackup
+kind: VolumeRemoteBackup
 metadata:
   namespace: backup
   name: pvcb-vol1
