@@ -1,0 +1,24 @@
+global
+  log stdout format raw local0
+  maxconn 2000
+
+defaults
+  mode tcp
+  log global
+  timeout connect 5s
+  timeout client 1h
+  timeout server 1h
+
+resolvers k8s
+  nameserver dns1 10.53.0.10:53
+  resolve_retries 30
+  timeout retry 1s
+  hold valid 1s
+
+frontend nfs_frontend
+  bind 172.16.0.210:2049
+  default_backend nfs_backend
+
+backend nfs_backend
+  default-server inter 1s fall 2 rise 1 on-marked-down shutdown-sessions init-addr last,libc,none
+  server-template sharemgr 1 lh-share-manager-headless.longhorn-system.svc.cluster.local:2049 resolvers k8s check

@@ -1,0 +1,26 @@
+kubectl -n longhorn-system get svc lh-share-manager-svc
+kubectl -n longhorn-system get endpoints lh-share-manager-svc -o yaml
+kubectl -n longhorn-system get endpointslice -l kubernetes.io/service-name=lh-share-manager-svc -o yaml
+
+kubectl -n longhorn-system get pod nfs-proxy -o wide
+kubectl -n longhorn-system describe pod nfs-proxy
+kubectl -n longhorn-system debug -it pod/nfs-proxy --target=haproxy --image=nicolaka/netshoot -- /bin/bash
+    ip addr
+    ip route
+    cat /etc/resolv.conf
+
+    nc -vz lh-share-manager-svc.longhorn-system.svc.cluster.local 2049
+
+    nc -vz lh-share-manager-headless.longhorn-system.svc.cluster.local 2049
+
+in VM
+    arping 172.16.0.210
+    nc -vz 172.16.0.210 2049
+
+    sudo mount -t nfs -o vers=4.2,hard,timeo=100,retrans=2 172.16.0.210:/pvc-d3fad61a-5e8b-44cf-af76-1ac52724dc01 /mnt
+
+DNS
+    $kubectl -n kube-system get svc rke2-coredns-rke2-coredns 
+    NAME                        TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)         AGE
+    rke2-coredns-rke2-coredns   ClusterIP   10.53.0.10   <none>        53/UDP,53/TCP   87d
+

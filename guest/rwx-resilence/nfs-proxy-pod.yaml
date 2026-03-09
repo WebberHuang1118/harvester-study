@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nfs-proxy
+  namespace: longhorn-system
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |
+      [
+        {
+          "name": "storagenetwork-kpzn5",
+          "namespace": "harvester-system",
+          "ips": [ "172.16.0.210/24" ]
+        }
+      ]
+spec:
+  containers:
+  - name: haproxy
+    image: haproxy:3.0
+    ports:
+    - containerPort: 2049
+      protocol: TCP
+    volumeMounts:
+    - name: haproxy-config
+      mountPath: /usr/local/etc/haproxy
+  volumes:
+  - name: haproxy-config
+    configMap:
+      name: nfs-proxy-haproxy
