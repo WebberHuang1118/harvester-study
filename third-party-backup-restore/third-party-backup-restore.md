@@ -94,17 +94,17 @@ The built-in backup and restore solution offers certain advantages for Harvester
 
 ### Implementation Roadmap
 
-#### Phase 1: Foundation (Target: v1.7.0)
+#### Phase 1: Foundation (Target: v1.9.0)
 - **Common Abstraction Layer**: Implement unified backup/restore interface framework
 - **Filesystem Freeze Integration**: Integrate with existing Harvester filesystem freeze capabilities
 - **Basic Backup/Restore Operations**: Support for single VM backup/restore with Longhorn storage
 
-#### Phase 2: Enhanced Features (Target: v1.8.0)
+#### Phase 2: Enhanced Features (Target: v1.9.0)
 - **Core Data Engine Implementation**: Implement one core data engine (e.g., restic) for VM backup/restore with third-party storage providers
 - **Cross-Storage Provider Support**: Enable backup with one storage provider and restore with another storage provider (e.g., backup with Longhorn and restore to LVM)
 - **UI Integration**: Integrate backup/restore functionality into Harvester UI
 
-#### Phase 3: Advanced Capabilities (Target: v1.9.0)
+#### Phase 3: Advanced Capabilities (Target: v1.10.0)
 - **Scheduling and Automation**: Implement backup scheduling with configurable retention policies
 
 #### Phase 4: Enterprise Readiness (Target: TBD)

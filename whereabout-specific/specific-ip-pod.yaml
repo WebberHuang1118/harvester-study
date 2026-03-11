@@ -1,0 +1,19 @@
+# specific-ip-pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: database-server
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |
+      [{
+        "name": "storagenetwork-static",
+        "namespace": "harvester-system",
+        "ips": ["172.16.0.10/24"]
+      }]
+spec:
+  containers:
+  - name: postgres
+    image: postgres:15-alpine
+    env:
+    - name: POSTGRES_PASSWORD
+      value: changeme

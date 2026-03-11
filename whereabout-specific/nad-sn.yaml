@@ -1,0 +1,22 @@
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  annotations:
+    storage-network.settings.harvesterhci.io: "true"
+  creationTimestamp: "2026-03-11T10:54:50Z"
+  finalizers:
+  - wrangler.cattle.io/harvester-network-manager-nad-controller
+  generateName: storagenetwork-
+  generation: 1
+  labels:
+    network.harvesterhci.io/clusternetwork: mgmt
+    network.harvesterhci.io/ready: "true"
+    network.harvesterhci.io/type: L2VlanNetwork
+    network.harvesterhci.io/vlan-id: "2011"
+    storage-network.settings.harvesterhci.io/hash: 36112a1115fcedfb59b9406fad38b99d5b9b8a2d
+  name: storagenetwork-frqx7
+  namespace: harvester-system
+  resourceVersion: "126231476"
+  uid: a48fb7f5-fe0c-4bcd-ace9-9e1a899c214e
+spec:
+  config: '{"cniVersion":"0.3.1","type":"bridge","bridge":"mgmt-br","promiscMode":true,"vlan":2011,"ipam":{"type":"whereabouts","range":"172.16.0.0/24","exclude":["172.16.0.1/28"]}}'
