@@ -63,10 +63,9 @@ Create a dedicated testing branch with version and appVersion bumps that points 
 
 ### 2.2 Generate Rancher Chart Content
 ```bash
-export PACKAGE=harvester/harvester-csi-driver
-make prepare
-make patch
-make clean
+PACKAGE=harvester/harvester-csi-driver make prepare
+PACKAGE=harvester/harvester-csi-driver make patch
+PACKAGE=harvester/harvester-csi-driver make clean
 PACKAGE=harvester/harvester-csi-driver make charts
 make validate
 ```
