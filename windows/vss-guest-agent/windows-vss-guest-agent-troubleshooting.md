@@ -301,15 +301,167 @@ kubectl exec -n <namespace> $(kubectl get pods -n <namespace> -l kubevirt.io=vir
 
 ### Option 1: VirtIO Driver Package (Recommended)
 
-The virtio-win drivers package from Fedora **includes the QEMU Guest Agent with VSS support**:
+The Fedora virtio-win guest-tools installer includes the VirtIO drivers, QEMU
+Guest Agent, and QEMU Guest Agent VSS provider. Run the following commands
+inside the Windows VM from **64-bit PowerShell as Administrator**.
 
-1. **Download from**: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/
-2. **Choose**: `stable-virtio/` for most stable release
-3. **Install**: Run the installer which will:
-   - Install VirtIO drivers for Windows
-   - Install QEMU Guest Agent with VSS support enabled
-   - Configure the service to start automatically
-   - Register VSS writers properly
+> Before changing storage drivers on an existing production VM, take a backup
+> or crash-consistent snapshot and confirm that you have console access.
+
+#### Download and install the stable guest-tools bundle
+
+```powershell
+# Confirm that this PowerShell session is elevated.
+$isAdmin = ([Security.Principal.WindowsPrincipal](
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    throw "Open PowerShell with 'Run as administrator' and run the commands again."
+}
+
+# Use the stable release URL. The URL redirects to the current stable build.
+$downloadUrl = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win-guest-tools.exe"
+$installer = Join-Path $env:TEMP "virtio-win-guest-tools.exe"
+
+# Download the installer. On older Windows PowerShell, TLS 1.2 may need to be
+# enabled explicitly before Invoke-WebRequest is called.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -Uri $downloadUrl -OutFile $installer -UseBasicParsing
+
+# Verify that Windows considers the publisher signature valid.
+$signature = Get-AuthenticodeSignature -FilePath $installer
+$signature | Format-List Status, StatusMessage, SignerCertificate
+if ($signature.Status -ne "Valid") {
+    throw "Installer signature is not valid; installation stopped."
+}
+
+# Optional: record the SHA-256 hash for auditing.
+Get-FileHash -Path $installer -Algorithm SHA256
+
+# Install the bundle silently and suppress an automatic reboot.
+# Run the EXE directly; do not pass this bundle to msiexec.exe.
+$process = Start-Process -FilePath $installer `
+    -ArgumentList "/install", "/quiet", "/norestart" `
+    -Wait -PassThru
+
+# 0 = success; 3010 = success, but Windows must be restarted.
+if ($process.ExitCode -notin 0, 3010) {
+    throw "virtio-win installation failed with exit code $($process.ExitCode)."
+}
+Write-Host "Installer exit code: $($process.ExitCode)"
+```
+
+For an interactive installation, replace the `Start-Process` command above
+with:
+
+```powershell
+Start-Process -FilePath $installer -ArgumentList "/install" -Wait
+```
+
+Keep the default QEMU Guest Agent and VSS provider components selected. The
+installer installs only drivers applicable to the VM's detected devices.
+
+#### Offline installation from a mounted virtio-win ISO
+
+If the VM has no Internet access, download
+[`virtio-win.iso`](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso)
+elsewhere and attach it to the VM as a CD-ROM. Then run:
+
+```powershell
+# Locate the guest-tools bundle on the attached CD-ROM.
+$guestTools = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=5" |
+    ForEach-Object { Join-Path $_.DeviceID "virtio-win-guest-tools.exe" } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+
+if (-not $guestTools) {
+    throw "virtio-win-guest-tools.exe was not found on an attached CD-ROM."
+}
+
+$process = Start-Process -FilePath $guestTools `
+    -ArgumentList "/install", "/quiet", "/norestart" `
+    -Wait -PassThru
+if ($process.ExitCode -notin 0, 3010) {
+    throw "virtio-win installation failed with exit code $($process.ExitCode)."
+}
+```
+
+If the ISO does not contain the bundle, install its 64-bit MSI packages
+directly:
+
+```powershell
+# Replace D: if the virtio-win ISO uses a different drive letter.
+$driverInstall = Start-Process msiexec.exe `
+    -ArgumentList '/i', 'D:\virtio-win-gt-x64.msi', '/qn', '/norestart' `
+    -Wait -PassThru
+if ($driverInstall.ExitCode -notin 0, 3010) {
+    throw "VirtIO driver MSI failed with exit code $($driverInstall.ExitCode)."
+}
+
+$agentInstall = Start-Process msiexec.exe `
+    -ArgumentList '/i', 'D:\guest-agent\qemu-ga-x86_64.msi', '/qn', '/norestart' `
+    -Wait -PassThru
+if ($agentInstall.ExitCode -notin 0, 3010) {
+    throw "QEMU guest-agent MSI failed with exit code $($agentInstall.ExitCode)."
+}
+```
+
+#### Configure and verify the guest-agent services
+
+```powershell
+# Display the installed QEMU services. Current packages normally use the
+# service names QEMU-GA and "QEMU Guest Agent VSS Provider".
+Get-Service |
+    Where-Object {
+        $_.Name -match "QEMU" -or $_.DisplayName -match "QEMU"
+    } |
+    Format-Table Status, Name, DisplayName, StartType -AutoSize
+
+# Configure and start the guest agent.
+Set-Service -Name "QEMU-GA" -StartupType Automatic
+Start-Service -Name "QEMU-GA"
+
+# Configure and start the VSS provider if it is present in this package.
+$qemuVss = Get-Service -Name "QEMU Guest Agent VSS Provider" `
+    -ErrorAction SilentlyContinue
+if ($qemuVss) {
+    Set-Service -Name $qemuVss.Name -StartupType Automatic
+    Start-Service -Name $qemuVss.Name
+} else {
+    Write-Warning "QEMU Guest Agent VSS Provider service was not found."
+}
+
+# VSS and the Microsoft Software Shadow Copy Provider are built into Windows.
+# Do not change their default startup type; start them for this verification.
+Start-Service -Name VSS
+Start-Service -Name swprv
+
+# Confirm service configuration and state.
+Get-Service -Name "QEMU-GA", "VSS", "swprv" |
+    Format-Table Status, Name, DisplayName, StartType -AutoSize
+sc.exe qc "QEMU-GA"
+
+# Confirm that Windows VSS writers are stable and report no errors.
+vssadmin.exe list writers
+
+# Confirm that the QEMU software provider is registered.
+vssadmin.exe list providers
+```
+
+All listed VSS writers should report `State: [1] Stable` and `Last error: No
+error`. `vssadmin list providers` should include `QEMU Guest Agent VSS
+Provider`; it is a VSS provider, so it is not expected to appear in the writer
+list.
+
+Restart Windows if the installer returned `3010`, a newly installed driver is
+pending activation, or the platform still does not detect the guest agent:
+
+```powershell
+Restart-Computer -Force
+```
+
+After the restart, repeat the service and `vssadmin.exe list writers` checks
+above, then retry the KubeVirt/Harvester snapshot.
 
 ### Option 2: Manual Installation
 
@@ -513,4 +665,4 @@ Watch for these error patterns in logs:
 - [Windows VSS Documentation](https://docs.microsoft.com/en-us/windows/win32/vss/volume-shadow-copy-service-overview)
 
 ---
-*Last Updated: September 2025*
+*Last Updated: July 2026*
