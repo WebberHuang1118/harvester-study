@@ -4,7 +4,7 @@ This runbook collects useful commands for inspecting LVM, dm-thin pools, device-
 
 > **Warning**
 >
-> Commands such as `wipefs`, `blkdiscard`, `pvcreate`, `vgcreate`, `lvremove`, `vgremove`, and `dmsetup remove` are destructive or can make active storage unavailable.
+> Commands such as `wipefs`, `blkdiscard`, `pvcreate`, `vgcreate`, `lvconvert --repair`, `lvremove`, `vgremove`, and `dmsetup remove` are destructive or can make active storage unavailable.
 >
 > Confirm the target device and stop all workloads using it before running destructive commands.
 
@@ -963,3 +963,357 @@ Calculate chunk count using the pool chunk size from:
 ```bash
 dmsetup table <thinpool-tpool-mapping>
 ```
+
+---
+
+## 19. Recover a Thin Pool That Fails to Activate
+
+This section covers a failure sequence like:
+
+```text
+Activation of logical volume vg1/vg1-thinpool is prohibited while
+logical volume vg1/vg1-thinpool_tdata is active.
+```
+
+followed by a targeted activation failure:
+
+```text
+Check of pool vg1/vg1-thinpool failed (status:64).
+Manual repair required!
+```
+
+The first message alone can indicate a standalone `_tdata`/`_tmeta` mapping,
+an active consumer, or competing activation attempts. The second message means
+LVM's thin metadata check failed and intentionally prevented pool activation.
+Do not bypass `thin_check` or force device-mapper activation.
+
+### Quiesce storage operations
+
+Before changing anything:
+
+- stop VMs and pods using LVs from the pool;
+- stop new PVC provisioning, clone, snapshot, restore, expansion, and deletion
+  operations on the node; and
+- confirm no process is still writing to a pool-backed LV.
+
+Record the current state:
+
+```bash
+lvs -a \
+  -o vg_name,lv_name,lv_size,lv_attr,lv_active,segtype,pool_lv,origin,devices \
+  "$VG"
+
+dmsetup ls --tree
+dmsetup info -c --noheadings -o name,open,uuid
+findmnt -rn -o TARGET,SOURCE
+```
+
+Interpret the result carefully:
+
+- If `_tdata` or `_tmeta` has a nonzero open count, find and stop the consumer.
+- If the component is active independently with open count zero, deactivate only
+  that exact component before trying normal pool activation.
+- If `Active` is blank for every LV and `dmsetup ls` reports no devices, there
+  is nothing to deactivate. Continue with a targeted activation attempt.
+
+Example component deactivation, only after confirming zero users:
+
+```bash
+lvchange -an "$VG/${THINPOOL}_tdata"
+lvchange -an "$VG/${THINPOOL}_tmeta"
+```
+
+Do not use `dmsetup remove --force` for this recovery.
+
+### Attempt targeted pool activation
+
+```bash
+lvchange -ay "$VG/$THINPOOL"
+activation_status=$?
+echo "activation exit code: $activation_status"
+```
+
+If this succeeds, inspect the dependency tree and then activate the remaining
+LVs normally:
+
+```bash
+dmsetup ls --tree
+vgchange -ay "$VG"
+```
+
+If activation reports `Check of pool ... failed` and `Manual repair required`,
+leave the pool inactive and proceed to metadata repair.
+
+### Save the LVM layout before repair
+
+```bash
+recovery_dir="/home/rancher/lvm-recovery"
+mkdir -p "$recovery_dir"
+
+vgcfgbackup \
+  -f "$recovery_dir/${VG}-before-thin-repair.vgcfg" \
+  "$VG"
+
+vgs -o vg_name,vg_size,vg_free,pv_count,lv_count "$VG"
+lvs -a \
+  -o vg_name,lv_name,lv_size,lv_attr,segtype,pool_lv,origin,devices \
+  "$VG"
+```
+
+`vgcfgbackup` records the VG layout, but it does **not** back up dm-thin mapping
+metadata. Preserve any metadata LV produced by the repair until data recovery
+has been verified.
+
+Confirm that the VG has a pool metadata spare:
+
+```bash
+lvs -a -o vg_name,lv_name,lv_size,lv_attr "$VG" |
+grep '_pmspare'
+```
+
+It commonly appears as:
+
+```text
+[lvol0_pmspare]
+```
+
+or:
+
+```text
+[lvol1_pmspare]
+```
+
+### Repair the thin-pool metadata
+
+Run the supported LVM repair interactively and retain its complete output:
+
+```bash
+lvconvert --repair "$VG/$THINPOOL"
+```
+
+Do not add `--force`. During a successful repair, LVM:
+
+1. runs `thin_repair` against the damaged metadata;
+2. writes repaired metadata to the VG's `_pmspare` LV;
+3. swaps the repaired metadata into the thin pool; and
+4. exposes the old unrepaired metadata as `${THINPOOL}_meta0`, or another
+   `${THINPOOL}_metaN` name.
+
+Example successful-repair warning:
+
+```text
+LV vg1/vg1-thinpool_meta0 holds a backup of the unrepaired metadata.
+Use lvremove when no longer required.
+```
+
+Do not remove that backup yet. If `lvconvert --repair` fails, stop and preserve
+the original metadata for support or advanced recovery. Do not repeatedly run
+repair with stronger force options.
+
+### Activate and verify the repaired pool
+
+```bash
+lvs -a \
+  -o vg_name,lv_name,lv_size,lv_attr,lv_active,segtype,pool_lv,origin \
+  "$VG"
+
+lvchange -ay "$VG/$THINPOOL"
+vgchange -ay "$VG"
+
+lvs -a \
+  -o vg_name,lv_name,lv_attr,lv_active,segtype,pool_lv,data_percent,metadata_percent \
+  "$VG"
+
+dmsetup ls --tree
+```
+
+A repaired and active pool should have an assembled dependency tree:
+
+```text
+vg1-pvc--...
+ └─vg1-vg1--thinpool-tpool
+    ├─vg1-vg1--thinpool_tdata
+    └─vg1-vg1--thinpool_tmeta
+```
+
+Validate every important thin LV and its filesystem or VM data. Metadata repair
+can discard mappings that cannot be reconstructed. Keep `${THINPOOL}_metaN`
+until recovery and data-integrity checks are complete.
+
+Warnings that the sum of thin-LV virtual sizes exceeds the physical pool are
+normal for thin provisioning, but pool exhaustion still needs protection.
+Configure monitoring and automatic extension, and keep free VG extents
+available:
+
+```bash
+lvs -o lv_name,seg_monitor,data_percent,metadata_percent "$VG/$THINPOOL"
+lvmconfig --type current activation/thin_pool_autoextend_threshold
+lvmconfig --type current activation/thin_pool_autoextend_percent
+```
+
+### CSI driver startup implication
+
+A CSI node plugin should not require global `vgchange -ay` to succeed before it
+creates its socket. A damaged or unrelated VG would otherwise crash-loop the
+whole node service. Prefer starting the plugin first and activating only the
+requested VG/LV during the node operation. CSI containers should also use the
+same host LVM configuration, udev data, and shared LVM lock directory as helper
+pods and host-side LVM commands.
+
+---
+
+## 20. Delete All dm-thin Child LVs From One Thin Pool
+
+This procedure permanently deletes every child thin LV selected from one exact
+thin pool, while retaining:
+
+- the thin pool itself;
+- its `_tdata` and `_tmeta` component LVs;
+- the VG's `_pmspare`; and
+- any `${THINPOOL}_metaN` backup created by metadata repair.
+
+Delete the corresponding Harvester VMs, VM backups/restores, VolumeSnapshots,
+PVCs, and PVs through Kubernetes first whenever possible. Removing LVs directly
+while Kubernetes objects remain creates stale PV/PVC records that still refer
+to nonexistent storage.
+
+Check for open mappings before deletion:
+
+```bash
+dmsetup info -c --noheadings --separator ' ' -o name,open |
+awk -v vg="$VG" '$1 ~ ("^" vg "-") && $2 != 0'
+```
+
+Do not continue while this prints any child LV that will be deleted.
+
+Save the following as `delete-thin-pool-children.sh` and run it with Bash:
+
+```bash
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+thin_vg="${1:-vg1}"
+thin_pool="${2:-vg1-thinpool}"
+
+for required_command in jq lvs lvremove xargs; do
+    command -v "$required_command" >/dev/null 2>&1 || {
+        echo "Required command not found: $required_command" >&2
+        exit 1
+    }
+done
+
+[[ "$thin_vg" =~ ^[a-zA-Z0-9+_.-]+$ ]] || {
+    echo "Invalid VG name: $thin_vg" >&2
+    exit 1
+}
+[[ "$thin_pool" =~ ^[a-zA-Z0-9+_.-]+$ ]] || {
+    echo "Invalid thin-pool name: $thin_pool" >&2
+    exit 1
+}
+
+pool_type="$(
+    lvs --noheadings -o segtype "$thin_vg/$thin_pool" 2>/dev/null |
+    xargs
+)"
+[[ "$pool_type" == "thin-pool" ]] || {
+    echo "$thin_vg/$thin_pool is not a thin pool" >&2
+    exit 1
+}
+
+# Select only public thin LVs whose pool_lv is the requested pool. The pool,
+# _tdata, _tmeta, _pmspare, and repaired metadata backups do not match.
+mapfile -t thin_volume_names < <(
+    lvs --reportformat json \
+        -o vg_name,lv_name,segtype,pool_lv "$thin_vg" |
+    jq -r \
+        --arg vg "$thin_vg" \
+        --arg pool "$thin_pool" '
+          .report[].lv[]
+          | select(
+              .vg_name == $vg and
+              .segtype == "thin" and
+              .pool_lv == $pool
+            )
+          | .lv_name
+        '
+)
+
+if ((${#thin_volume_names[@]} == 0)); then
+    echo "No child thin LVs found in $thin_vg/$thin_pool"
+    exit 0
+fi
+
+echo "The following ${#thin_volume_names[@]} thin LVs will be permanently deleted:"
+for thin_volume_name in "${thin_volume_names[@]}"; do
+    printf '  %s/%s\n' "$thin_vg" "$thin_volume_name"
+done
+
+confirmation="DELETE ${#thin_volume_names[@]} THIN LVS FROM $thin_vg/$thin_pool"
+read -r -p "Type '$confirmation' to continue: " answer
+[[ "$answer" == "$confirmation" ]] || {
+    echo "Cancelled"
+    exit 1
+}
+
+for thin_volume_name in "${thin_volume_names[@]}"; do
+    # Revalidate the exact type and parent pool immediately before deletion.
+    current_type="$(
+        lvs --noheadings -o segtype "$thin_vg/$thin_volume_name" |
+        xargs
+    )"
+    current_pool="$(
+        lvs --noheadings -o pool_lv "$thin_vg/$thin_volume_name" |
+        xargs
+    )"
+
+    if [[ "$current_type" != "thin" || "$current_pool" != "$thin_pool" ]]; then
+        echo "Refusing unexpected LV: $thin_vg/$thin_volume_name" >&2
+        exit 1
+    fi
+
+    echo "Deleting $thin_vg/$thin_volume_name"
+    # -y answers the confirmation prompt. It is intentionally not --force.
+    lvremove -y "$thin_vg/$thin_volume_name"
+done
+
+echo "Verifying that no child thin LVs remain in $thin_vg/$thin_pool"
+lvs --reportformat json \
+    -o vg_name,lv_name,segtype,pool_lv "$thin_vg" |
+jq -r \
+    --arg vg "$thin_vg" \
+    --arg pool "$thin_pool" '
+      .report[].lv[]
+      | select(
+          .vg_name == $vg and
+          .segtype == "thin" and
+          .pool_lv == $pool
+        )
+      | [.vg_name, .lv_name, .segtype, .pool_lv]
+      | @tsv
+    '
+```
+
+Run it explicitly against the intended pool:
+
+```bash
+chmod +x delete-thin-pool-children.sh
+./delete-thin-pool-children.sh vg1 vg1-thinpool
+```
+
+The script deliberately avoids `--force`. If an LV remains mounted or open,
+`lvremove` should fail and `set -e` stops the deletion loop. Resolve the user and
+rerun the script; already deleted LVs will no longer be selected.
+
+Final verification:
+
+```bash
+lvs -a \
+  -o vg_name,lv_name,lv_attr,lv_size,segtype,pool_lv,data_percent,metadata_percent \
+  "$VG"
+
+dmsetup ls --tree
+```
+
+Do not automatically delete `${THINPOOL}_metaN`. Keep it until there is no
+remaining recovery or support need.
