@@ -360,6 +360,36 @@ For an IPv4-primary dual-stack cluster, the resulting matrix is:
 
 The inverse is also true: `preferred-data-engine-ip-family=ipv4` fails with an IPv6-only authoritative Storage Network. A dual-stack Storage Network can satisfy either explicit setting.
 
+#### When Is an Explicit Preferred Family Needed?
+
+The setting always exists with the value `default`, but an operator mainly needs to choose an explicit `ipv4` or `ipv6` value when the authoritative network is dual-stack and deterministic family selection is required:
+
+1. **Storage Network enabled with a dual-stack NAD:** the setting selects IPv4 or IPv6 from the addresses on `lhnet1`.
+2. **Storage Network disabled with a dual-stack cluster Pod network:** the setting selects IPv4 or IPv6 from the Pod's cluster-network addresses.
+
+A Kubernetes dual-stack network still has an ordered primary family. It is either IPv4-first or IPv6-first through its CIDR and Pod-address ordering; dual-stack does not mean that both families are unordered. Consequently, with no Storage Network and `preferred-data-engine-ip-family=default`, Longhorn can retain legacy behavior and normally use the primary Pod family. An explicit value is needed only to enforce a deterministic choice, especially when Longhorn should use the secondary family.
+
+For a single-stack Storage NAD, the NAD already determines the only usable family. An explicit setting is not required to decide between families, but it can express and enforce the operator's intent:
+
+| Authoritative network | Desired behavior | Explicit setting needed? |
+| --- | --- | --- |
+| Dual-stack Storage NAD; must use IPv6 | Select IPv6 on `lhnet1` | Yes: `ipv6` |
+| Dual-stack Storage NAD; legacy/automatic choice is acceptable | Preserve existing behavior | No: keep `default` |
+| No Storage Network; IPv4-first Pod network; must use secondary IPv6 | Select the cluster Pod's IPv6 address | Yes: `ipv6` |
+| No Storage Network; using primary IPv4 is acceptable | Preserve primary-family behavior | No: keep `default` |
+| IPv4-only Storage NAD | IPv4 is the only available family | No selection is necessary; optional `ipv4` enforces intent |
+| IPv4-only Storage NAD with `ipv6` | Requested family is unavailable | Invalid combination; Longhorn fails closed |
+
+The refined model is therefore:
+
+```text
+authoritative network = storage NAD, if configured; otherwise cluster Pod network
+selected family       = default/legacy, or explicit ipv4/ipv6
+effective endpoint    = selected family on the authoritative network
+```
+
+The Storage Network determines **where** Longhorn backend traffic must run. The preferred-family setting determines **which family** Longhorn must use on that network. On a single-stack authoritative network, the setting primarily provides enforcement and mismatch detection rather than resolving a family-selection ambiguity.
+
 The LEP gives the IPv6-on-IPv4-only mismatch as a normative example. The desired value remains `ipv6`, Instance Manager reports unsynchronized, affected endpoints are cleared or withheld, and V1, V2, BIM, and BIDS operations cannot converge until IPv6 becomes available or the setting changes. The usable backend family is **none**, not IPv4.
 
 This strict behavior applies to explicit `ipv4` and `ipv6`. The `default` value is different:
@@ -492,3 +522,4 @@ The precise conclusion of the shared discussion is:
 5. The proposed Helm `service.ipFamilyPolicy` value covers only static chart-rendered Longhorn Services. Dynamic RWX Share Manager Services require a separate Longhorn Manager implementation.
 6. For current Longhorn, the normal selector-based RWX Service defaults to `SingleStack`; the draft LEP proposes explicit `PreferDualStack` reconciliation for both selector-based and headless Share Manager Services.
 7. For explicit family selection, a configured Storage Network is authoritative. The requested family must exist on that NAD; otherwise Longhorn fails closed without using the opposite family or falling back to the cluster network.
+8. An explicit preferred family is mainly needed when the authoritative network is dual-stack and a deterministic choice is required. A single-stack authoritative network already fixes the available family, so an explicit matching value serves primarily as enforcement.

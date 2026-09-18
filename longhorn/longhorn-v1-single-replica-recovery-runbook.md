@@ -74,6 +74,37 @@ For a volume created from a backing image:
 
 # Variables used in this runbook
 
+## Command execution locations
+
+This runbook uses two execution locations. Do not assume that a path created on one is visible on the other.
+
+| Label | Where commands run | Required access and tools |
+|---|---|---|
+| `ADMIN HOST` | A workstation, management VM, or other host with network access to the Harvester Kubernetes API | Working cluster kubeconfig, `kubectl`, `virtctl`, and `jq` |
+| `RECOVERY NODE` | The Harvester node named by `RECOVERY_NODE`; it contains the source replica directory, the backing-image directory when applicable, and the recovery copies | SSH access, root or `sudo`, `rsync`, `sha512sum`, filesystem tools, and enough free space below `/home/rancher` |
+
+Commands marked `ADMIN HOST` do not need to run on a Harvester node. Commands marked `RECOVERY NODE` must run on the node whose local paths are used by the recovery Pod's `hostPath` volumes.
+
+The examples use `/home/rancher` because it is mutable on Harvester. Confirm that its filesystem has enough free space for the sparse replica copy, backing image, raw export, and temporary files. Do not use `/mnt` as a working directory on Harvester.
+
+Quick command-location map:
+
+| Task | Run on |
+|---|---|
+| Query PVC, PV, Volume, Replica, BackingImage, Pod, or logs with `kubectl` | `ADMIN HOST` |
+| Stop the VM with `virtctl` | `ADMIN HOST` |
+| Save Kubernetes metadata and create recovery YAML files | `ADMIN HOST` |
+| Apply/delete a normal recovery Pod | `ADMIN HOST` |
+| Inspect and copy the source replica directory | `RECOVERY NODE` |
+| Locate, checksum, and copy the backing-image file | `RECOVERY NODE` |
+| Check `/home/rancher`, `/dev/longhorn`, block devices, partitions, or local processes | `RECOVERY NODE` |
+| Export or mount the recovered block device | `RECOVERY NODE` |
+| Install/remove the RKE2 static-Pod manifest | `RECOVERY NODE` |
+
+## Initial variables on the admin host
+
+**Run on: `ADMIN HOST`**
+
 Replace the following placeholders with values from your environment:
 
 ```bash
@@ -81,8 +112,8 @@ export VM_NAMESPACE="<vm-namespace>"
 export VM_NAME="<vm-name>"
 export PVC_NAME="<vm-disk-pvc>"
 
-export RECOVERY_NODE="<node-containing-healthy-recovery-storage>"
-export RECOVERY_DISK="/mnt/healthy-disk"
+export RECOVERY_NODE="<node-containing-source-replica-and-backing-image>"
+export RECOVERY_DISK="/home/rancher"
 ```
 
 Example:
@@ -93,12 +124,14 @@ export VM_NAME="windows-vm"
 export PVC_NAME="windows-vm-disk-0"
 
 export RECOVERY_NODE="harvester-node-2"
-export RECOVERY_DISK="/mnt/healthy-disk"
+export RECOVERY_DISK="/home/rancher"
 ```
 
 ---
 
 # Phase 1: Identify the volume and remaining replica
+
+All commands in Phase 1 run on the `ADMIN HOST` unless a step explicitly says otherwise.
 
 ## 1. Get the Longhorn volume name
 
@@ -298,12 +331,24 @@ echo "$ENGINE_IMAGE"
 
 Using the image recorded by the replica is preferred.
 
+This runbook assumes the recovery work runs on the same Harvester node as the remaining replica and, for Case B, its backing-image copy. Set and verify the recovery node on the admin host:
+
+```bash
+export RECOVERY_NODE="$REPLICA_NODE"
+
+printf 'Recovery node: %s\n' "$RECOVERY_NODE"
+kubectl get node "$RECOVERY_NODE"
+```
+
+If `/home/rancher` on that node does not have enough healthy free space, stop and arrange a separate recovery destination. Do not silently place the recovery copy back on the failing or full Longhorn disk.
+
 ---
 
 ## 7. Save Kubernetes metadata
 
 ```bash
-export METADATA_DIR="./longhorn-recovery-metadata/${VOLUME_NAME}"
+export ADMIN_WORKDIR="${HOME}/longhorn-recovery/${VOLUME_NAME}"
+export METADATA_DIR="${ADMIN_WORKDIR}/metadata"
 
 mkdir -p "$METADATA_DIR"
 
@@ -332,10 +377,17 @@ fi
 
 # Phase 2: Copy the replica to healthy storage
 
-Run the following commands on the node containing the original replica.
+All commands in Phase 2 run on the `RECOVERY NODE`, which this procedure sets to the node containing the original replica directory. For Case B, it must also have a readable backing-image file.
+
+**Run on: `ADMIN HOST`** — open an SSH session:
 
 ```bash
-ssh <user>@"$REPLICA_NODE"
+ssh rancher@"$RECOVERY_NODE"
+```
+
+**Run on: `RECOVERY NODE`** — obtain a root shell:
+
+```bash
 sudo -i
 ```
 
@@ -347,7 +399,7 @@ export DISK_PATH="<longhorn-disk-path>"
 export DATA_DIRECTORY="<replica-data-directory-name>"
 
 export SOURCE_REPLICA="${DISK_PATH}/replicas/${DATA_DIRECTORY}"
-export RECOVERY_DISK="/mnt/healthy-disk"
+export RECOVERY_DISK="/home/rancher"
 export RECOVERY_ROOT="${RECOVERY_DISK}/longhorn-recovery/${VOLUME_NAME}"
 export REPLICA_COPY="${RECOVERY_ROOT}/replica"
 ```
@@ -401,8 +453,8 @@ Do not continue if a Longhorn process is still using the directory.
 df -h "$DISK_PATH"
 df -h "$RECOVERY_DISK"
 
-findmnt "$DISK_PATH"
-findmnt "$RECOVERY_DISK"
+findmnt -T "$DISK_PATH"
+findmnt -T "$RECOVERY_DISK"
 ```
 
 The destination should not be the same full filesystem.
@@ -499,6 +551,8 @@ Using a different name avoids colliding with an existing `/dev/longhorn/<origina
 
 # Case A: V1 volume without a backing image
 
+**Run on: `ADMIN HOST`**
+
 Use this case when:
 
 ```bash
@@ -509,7 +563,16 @@ succeeds.
 
 ## 1. Create the recovery Pod manifest
 
-Create `/tmp/longhorn-recovery-no-bi.yaml`:
+**Run on: `ADMIN HOST`**
+
+Create `${ADMIN_WORKDIR}/longhorn-recovery-no-bi.yaml`. The manifest file is local to the admin host, but `<REPLICA_COPY>` must be the absolute `/home/rancher/...` path on the `RECOVERY NODE`:
+
+```bash
+mkdir -p "$ADMIN_WORKDIR"
+vi "${ADMIN_WORKDIR}/longhorn-recovery-no-bi.yaml"
+```
+
+Paste and customize the following manifest:
 
 ```yaml
 apiVersion: v1
@@ -586,17 +649,19 @@ args:
 
 ```yaml
 hostPath:
-  path: "/mnt/healthy-disk/longhorn-recovery/pvc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/replica"
+  path: "/home/rancher/longhorn-recovery/pvc-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/replica"
 ```
 
 ---
 
 ## 2. Launch the Pod
 
+**Run on: `ADMIN HOST`**
+
 When the Kubernetes API is working:
 
 ```bash
-kubectl apply -f /tmp/longhorn-recovery-no-bi.yaml
+kubectl apply -f "${ADMIN_WORKDIR}/longhorn-recovery-no-bi.yaml"
 ```
 
 Verify scheduling:
@@ -621,10 +686,17 @@ kubectl -n longhorn-system \
 
 Use this only when the Kubernetes control plane cannot create a normal Pod.
 
-On the recovery node:
+**Run on: `ADMIN HOST`** — copy the manifest to the recovery node:
 
 ```bash
-sudo cp /tmp/longhorn-recovery-no-bi.yaml \
+scp "${ADMIN_WORKDIR}/longhorn-recovery-no-bi.yaml" \
+  rancher@"${RECOVERY_NODE}":/home/rancher/longhorn-recovery-no-bi.yaml
+```
+
+**Run on: `RECOVERY NODE`** — install the static-Pod manifest:
+
+```bash
+sudo cp /home/rancher/longhorn-recovery-no-bi.yaml \
   /var/lib/rancher/rke2/agent/pod-manifests/longhorn-recovery.yaml
 ```
 
@@ -633,6 +705,8 @@ Do not use both the normal Pod and static-Pod methods at the same time.
 ---
 
 # Case B: V1 volume with a backing image
+
+**Run on: `ADMIN HOST`**
 
 Use this case when:
 
@@ -650,7 +724,7 @@ The exact backing image must be copied and supplied to the replica engine.
 
 ## 1. Get the backing-image UUID and checksum
 
-Run from a machine with `kubectl` access:
+**Run on: `ADMIN HOST`**
 
 ```bash
 export BACKING_IMAGE_UUID=$(
@@ -682,11 +756,14 @@ printf 'Checksum:      %s\n' "$EXPECTED_CHECKSUM"
 
 ## 2. Locate the backing-image file
 
-On the node containing a ready backing-image copy:
+**Run on: `RECOVERY NODE`**
+
+Set the values printed in the preceding admin-host step. Shell variables do not cross an SSH connection:
 
 ```bash
 export BACKING_IMAGE="<backing-image-name>"
 export BACKING_IMAGE_UUID="<backing-image-uuid>"
+export EXPECTED_CHECKSUM="<backing-image-sha512-checksum>"
 export DISK_PATH="<longhorn-disk-path>"
 
 export SOURCE_BACKING_FILE="${DISK_PATH}/backing-images/${BACKING_IMAGE}-${BACKING_IMAGE_UUID}/backing"
@@ -704,7 +781,7 @@ ls -lh "$SOURCE_BACKING_FILE"
 If the file is not on the replica disk, search other Longhorn disks:
 
 ```bash
-find /var/lib/harvester /mnt \
+find /var/lib/harvester /home/rancher \
   -type f \
   -path "*/backing-images/${BACKING_IMAGE}-${BACKING_IMAGE_UUID}/backing" \
   2>/dev/null
@@ -715,6 +792,8 @@ Do not continue until the exact backing-image file is found.
 ---
 
 ## 3. Verify the backing-image checksum
+
+**Run on: `RECOVERY NODE`**
 
 ```bash
 export ACTUAL_CHECKSUM=$(
@@ -739,6 +818,8 @@ fi
 ---
 
 ## 4. Copy the backing image
+
+**Run on: `RECOVERY NODE`**
 
 ```bash
 export BACKING_COPY_DIR="${RECOVERY_ROOT}/backing"
@@ -787,15 +868,16 @@ The third argument is the frontend, not a backing-image path.
 The launcher starts a replica similar to:
 
 ```bash
-longhorn replica /volume/ --size <size>
+longhorn replica --size <size> /volume/
 ```
 
 For a backing-image volume, it must instead start the replica with:
 
 ```bash
-longhorn replica /volume/ \
+longhorn replica \
   --size <size> \
-  --backing-file /backing/backing
+  --backing-file /backing/backing \
+  /volume/
 ```
 
 The following manifest copies and modifies the launcher only inside the temporary recovery container.
@@ -804,7 +886,16 @@ The following manifest copies and modifies the launcher only inside the temporar
 
 ## 6. Create the backing-image recovery manifest
 
-Create `/tmp/longhorn-recovery-with-bi.yaml`:
+**Run on: `ADMIN HOST`**
+
+Create `${ADMIN_WORKDIR}/longhorn-recovery-with-bi.yaml`. Both `<REPLICA_COPY>` and `<BACKING_COPY_DIR>` are absolute paths on the `RECOVERY NODE`, normally below `/home/rancher/longhorn-recovery/<volume>/`:
+
+```bash
+mkdir -p "$ADMIN_WORKDIR"
+vi "${ADMIN_WORKDIR}/longhorn-recovery-with-bi.yaml"
+```
+
+Paste and customize the following manifest:
 
 ```yaml
 apiVersion: v1
@@ -856,11 +947,16 @@ spec:
 
           echo "Original launcher: ${LAUNCHER}"
 
-          MATCH_COUNT="$(
-            grep -c 'replica /volume/' "${LAUNCHER}" || true
+          REPLICA_MATCH_COUNT="$(
+            grep -Fc 'replica /volume/ "--size" $size' "${LAUNCHER}" || true
           )"
 
-          if [ "${MATCH_COUNT}" -ne 1 ]; then
+          PORT_MATCH_COUNT="$(
+            grep -Fc -- '--port-args "--listen,localhost:"' "${LAUNCHER}" || true
+          )"
+
+          if [ "${REPLICA_MATCH_COUNT}" -ne 1 ] ||
+              [ "${PORT_MATCH_COUNT}" -ne 2 ]; then
             echo "Unexpected launch-simple-longhorn format"
             echo "Refusing to modify the launcher automatically"
             cat "${LAUNCHER}"
@@ -868,15 +964,15 @@ spec:
           fi
 
           sed \
-            '/replica \/volume\// s|$| "--backing-file" /backing/backing|' \
+            -e 's|--port-args "--listen,localhost:"|--port-args="--listen=localhost:"|g' \
+            -e 's|replica /volume/ "--size" $size|replica "--size" $size "--backing-file" /backing/backing /volume/|' \
             "${LAUNCHER}" \
             > /tmp/launch-simple-longhorn-bi
 
           chmod +x /tmp/launch-simple-longhorn-bi
 
-          echo "Modified replica command:"
-          grep -n 'replica /volume/' \
-            /tmp/launch-simple-longhorn-bi
+          echo "Modified process commands:"
+          grep -n 'process create' /tmp/launch-simple-longhorn-bi
 
           exec /tmp/launch-simple-longhorn-bi \
             "${RECOVERY_NAME}" \
@@ -940,8 +1036,10 @@ kubectl -n longhorn-system delete pod inspect-engine-launcher
 
 ## 7. Launch the backing-image recovery Pod
 
+**Run on: `ADMIN HOST`**
+
 ```bash
-kubectl apply -f /tmp/longhorn-recovery-with-bi.yaml
+kubectl apply -f "${ADMIN_WORKDIR}/longhorn-recovery-with-bi.yaml"
 ```
 
 Verify placement:
@@ -970,11 +1068,14 @@ If the launcher format is different, the Pod should stop before opening the repl
 
 # Phase 3: Validate and export the recovered block device
 
-Run these commands on the recovery node.
+All commands in Phase 3 run on the `RECOVERY NODE`. The device under `/dev/longhorn` and the Pod `hostPath` data exist on this node, not on the admin host.
+
+**Run on: `RECOVERY NODE`**
 
 ```bash
 export RECOVERY_NAME="<recovery-name>"
 export RECOVERY_DEVICE="/dev/longhorn/${RECOVERY_NAME}"
+export RECOVERY_MOUNT="/home/rancher/recovered-volume"
 ```
 
 ---
@@ -1061,41 +1162,41 @@ export RECOVERY_PARTITION="/dev/sdX1"
 ### ext4
 
 ```bash
-mkdir -p /mnt/recovered-volume
+mkdir -p "$RECOVERY_MOUNT"
 
 mount \
   -o ro,noload \
   "$RECOVERY_PARTITION" \
-  /mnt/recovered-volume
+  "$RECOVERY_MOUNT"
 ```
 
 ### XFS
 
 ```bash
-mkdir -p /mnt/recovered-volume
+mkdir -p "$RECOVERY_MOUNT"
 
 mount \
   -o ro,norecovery \
   "$RECOVERY_PARTITION" \
-  /mnt/recovered-volume
+  "$RECOVERY_MOUNT"
 ```
 
 ### NTFS
 
 ```bash
-mkdir -p /mnt/recovered-volume
+mkdir -p "$RECOVERY_MOUNT"
 
 mount \
   -t ntfs3 \
   -o ro \
   "$RECOVERY_PARTITION" \
-  /mnt/recovered-volume
+  "$RECOVERY_MOUNT"
 ```
 
 Inspect files:
 
 ```bash
-find /mnt/recovered-volume -maxdepth 2 -ls |
+find "$RECOVERY_MOUNT" -maxdepth 2 -ls |
   head -100
 ```
 
@@ -1106,6 +1207,8 @@ Do not run modifying repair commands against the only raw export or recovery cop
 # Phase 4: Cleanup
 
 ## 1. Save recovery logs
+
+**Run on: `ADMIN HOST`**
 
 Before deleting the Pod:
 
@@ -1119,8 +1222,10 @@ kubectl -n longhorn-system \
 
 ## 2. Unmount the filesystem
 
+**Run on: `RECOVERY NODE`**
+
 ```bash
-umount /mnt/recovered-volume
+umount "$RECOVERY_MOUNT"
 ```
 
 Verify:
@@ -1135,6 +1240,8 @@ lsblk -f "$REAL_DEVICE"
 
 For a normal Kubernetes Pod:
 
+**Run on: `ADMIN HOST`**
+
 ```bash
 kubectl -n longhorn-system \
   delete pod longhorn-recovery
@@ -1142,12 +1249,16 @@ kubectl -n longhorn-system \
 
 For an RKE2 static Pod:
 
+**Run on: `RECOVERY NODE`**
+
 ```bash
 sudo rm -f \
   /var/lib/rancher/rke2/agent/pod-manifests/longhorn-recovery.yaml
 ```
 
 Wait for cleanup:
+
+**Run on: `RECOVERY NODE`**
 
 ```bash
 sleep 10
@@ -1170,7 +1281,7 @@ fi
 
 # Data to preserve
 
-Keep the following until recovery has been fully validated:
+Keep the following until recovery has been fully validated. The recovery data paths below are under `/home/rancher` on the `RECOVERY NODE`; Kubernetes metadata, manifests, and captured Pod logs are under `${ADMIN_WORKDIR}` on the `ADMIN HOST`:
 
 ```text
 longhorn-recovery/<volume>/replica/
@@ -1188,6 +1299,8 @@ recovery Pod logs
 # Troubleshooting
 
 ## Recovery Pod is scheduled on the wrong node
+
+**Run on: `ADMIN HOST`**
 
 Check:
 
@@ -1209,6 +1322,8 @@ The host path must exist on that same node.
 
 ## Pod reports that `/volume/volume.meta` is missing
 
+**Run on: `RECOVERY NODE`**
+
 Check the host path:
 
 ```bash
@@ -1228,6 +1343,8 @@ Do not mount the parent directory above the actual replica directory.
 
 ## Pod starts but `/dev/longhorn/<name>` does not appear
 
+**Run on: `ADMIN HOST`** — check the Pod logs:
+
 Check logs:
 
 ```bash
@@ -1235,7 +1352,7 @@ kubectl -n longhorn-system \
   logs longhorn-recovery
 ```
 
-Check node requirements:
+**Run on: `RECOVERY NODE`** — check node requirements and processes:
 
 ```bash
 iscsiadm --version
@@ -1251,6 +1368,8 @@ ps aux | grep -E 'longhorn|tgtd'
 ---
 
 ## Backing-image recovery reports an unsupported format
+
+**Run on: `RECOVERY NODE`**
 
 Check:
 
@@ -1290,7 +1409,7 @@ For an uploaded backing image, if every Longhorn copy and the original upload ar
 
 Do not immediately run a modifying repair command.
 
-First preserve the complete recovered disk:
+**Run on: `RECOVERY NODE`** — first preserve the complete recovered disk:
 
 ```bash
 dd \

@@ -81,7 +81,7 @@ kubectl -n harvester-system get pods | grep node-disk-manager
 SSH into the target Harvester node and create a backing file. Use a size that is an even multiple of 4096 bytes. Values such as `20G`, `50G`, or `100G` are fine for quick testing.
 
 ```bash
-LOOP_FILE=/var/lib/harvester-storage-loop.img
+LOOP_FILE=/var/lib/harvester/defaultdisk/harvester-storage-loop.img
 LOOP_SIZE=20G
 
 sudo truncate -s "${LOOP_SIZE}" "${LOOP_FILE}"
@@ -139,11 +139,11 @@ To create two disposable loops for one LVM volume group, use separate backing fi
 ```bash
 LOOP_SIZE=150G
 
-sudo truncate -s "${LOOP_SIZE}" /var/lib/lvm1.img
-sudo truncate -s "${LOOP_SIZE}" /var/lib/lvm2.img
+sudo truncate -s "${LOOP_SIZE}" /var/lib/harvester/defaultdisk/lvm1.img
+sudo truncate -s "${LOOP_SIZE}" /var/lib/harvester/defaultdisklvm2.img
 
-sudo losetup --find --show /var/lib/lvm1.img
-sudo losetup --find --show /var/lib/lvm2.img
+sudo losetup --find --show /var/lib/harvester/defaultdisk/lvm1.img
+sudo losetup --find --show /var/lib/harvester/defaultdisk/lvm2.img
 ```
 
 Record the paths printed by `losetup`; the examples in the LVM section assume they are `/dev/loop1` and `/dev/loop2`.
